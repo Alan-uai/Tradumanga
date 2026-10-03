@@ -100,13 +100,27 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 
 ### Fase B — Orquestração
 
-- [ ] fila de jobs transacionais
-- [ ] claim atômico com SKIP LOCKED
-- [ ] retry/recovery de jobs
+- [x] fila de jobs transacionais
+- [x] claim atômico com SKIP LOCKED
+- [x] retry/recovery de jobs
 - [ ] processamento por página
-- [ ] processamento por capítulo
-- [ ] idempotência
+- [x] criação/idempotência do job de processamento por capítulo
+- [x] idempotência
 - [ ] observabilidade de status e erros
+
+Implementado nesta fase:
+
+- lease de worker em `translation_jobs`;
+- `worker_id`, `lock_expires_at` e `max_attempts`;
+- claim atômico;
+- conclusão/falha controladas pelo worker;
+- recuperação automática de leases expirados;
+- limite de 3 tentativas por padrão;
+- função idempotente `enqueue_translation_job`;
+- endpoint Next.js `POST /api/jobs/enqueue`;
+- upload de capítulo agora cria/enfileira o job `process_chapter`.
+
+A execução pesada continua fora do request HTTP. O worker externo ainda será implementado.
 
 ### Fase C — Ingestão e cache
 
@@ -258,13 +272,13 @@ Base implementada:
 
 Último commit conhecido:
 
-6a3fa3157e51d1ed119bc5b1359f5b516c015a76
+0f8a448c9d355fe51d39e7302e30f40a5c480927
 
-O build de produção correspondente foi confirmado como READY no Vercel.
+O commit anterior, `6a3fa3157e51d1ed119bc5b1359f5b516c015a76`, foi confirmado como READY no Vercel. O commit atual contém a primeira parte da orquestração e aguarda a conclusão do novo build.
 
-Próxima etapa de implementação:
+Próxima etapa:
 
-**Fase B — Orquestração de jobs**, começando por claim atômico, idempotência e recuperação de jobs.
+**Fase B — Worker externo + processamento por página**, começando pelo consumidor da fila e pelo dispatcher de `process_chapter`.
 
 ## 10. Critério de conclusão
 
