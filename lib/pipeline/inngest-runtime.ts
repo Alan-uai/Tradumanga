@@ -102,12 +102,25 @@ export async function detectSourceMetadata(url:string):Promise<DetectedSourceMet
 
 function imageUrls(html:string,base:string){
   const out:string[]=[],seen=new Set<string>();
-  const add=(raw:string)=>{try{const u=new URL(decode(raw),base).toString();if(!seen.has(u)&&/^https?:$/i.test(new URL(u).protocol)){seen.add(u);out.push(u);}}catch{}};
-  for(const tag of html.match(/<img\\b[^>]*>/gi)??[]){
-    for(const m of tag.matchAll(/(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=["']([^"']+)["']/gi)) add(m[1].split(",")[0].trim().split(/\\s+/)[0]);
+  const add=(raw:string)=>{
+    try{
+      const u=new URL(decode(raw),base).toString();
+      if(!seen.has(u)&&/^https?:$/i.test(new URL(u).protocol)){seen.add(u);out.push(u);}
+    }catch{}
+  };
+  const imgTagRe=new RegExp("<img\\\\b[^>]*>","gi");
+  const attrRe=new RegExp("(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=[\\\"']([^\\\"']+)[\\\"']","gi");
+  for(const tag of html.match(imgTagRe)??[]){
+    for(const m of tag.matchAll(attrRe)){
+      add(m[1].split(",")[0].trim().split(/\\s+/)[0]);
+    }
     if(out.length>=MAX_HTML_IMAGES)break;
   }
-  for(const m of html.matchAll(/https?:\\/\\/[^"'\\s<>]+\\.(?:jpe?g|png|webp)(?:\\?[^"'\\s<>]*)?/gi)){add(m[0]);if(out.length>=MAX_HTML_IMAGES)break;}
+  const directImageRe=new RegExp("https?:\\\\/\\\\/[^\\\"'\\s<>]+\\\\.(?:jpe?g|png|webp)(?:\\\\?[^\\\"'\\s<>]*)?","gi");
+  for(const m of html.matchAll(directImageRe)){
+    add(m[0]);
+    if(out.length>=MAX_HTML_IMAGES)break;
+  }
   return out.slice(0,MAX_HTML_IMAGES);
 }
 const actorPrefix=(s:{owner_id:string|null;anonymous_session_id:string|null})=>s.owner_id??s.anonymous_session_id??(()=>{throw new Error("Obra sem proprietário ou sessão anônima.")})();
