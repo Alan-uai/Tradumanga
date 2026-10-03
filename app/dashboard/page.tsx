@@ -18,7 +18,7 @@ export default async function Dashboard(){
         <img className="work-banner" src={"/api/series/"+w.id+"/asset?type=banner"} alt="" />
         <div className="work-art-shade" />
         <div className="work-logo-wrap">
-          <img className="work-logo" src={"/api/series/"+w.id+"/asset?type=logo"} alt={w.title} />
+          {w.logo_path ? <img className="work-logo" src={"/api/series/"+w.id+"/asset?type=logo"} alt={w.title} /> : <span className="work-title-mark">{w.title}</span>}
         </div>
       </div>
       <strong>{w.title}</strong>
