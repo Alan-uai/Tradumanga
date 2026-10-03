@@ -227,3 +227,12 @@ input:focus{transform:translateZ(4px)}
   .motion-3d--input{min-height:170px}
   .motion-3d--processing{min-height:220px}
 }
+
+.hero--immersive{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(360px,.95fr);gap:42px;align-items:center;max-width:none}
+.hero--immersive .hero-copy{max-width:760px}
+.hero-actions{display:flex;gap:10px;flex-wrap:wrap}
+.hero--immersive .motion-3d{min-height:430px}
+.features--interactive article{position:relative;overflow:hidden}
+.features--interactive article:after{content:"";position:absolute;width:140px;height:140px;right:-70px;top:-70px;border-radius:50%;background:radial-gradient(circle,rgba(217,54,62,.12),transparent 68%);transition:transform .5s}
+.features--interactive article:hover:after{transform:scale(1.7)}
+@media(max-width:900px){.hero--immersive{grid-template-columns:1fr}.hero--immersive .motion-3d{min-height:330px}}
