@@ -20,42 +20,20 @@ function openDb(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
   });
 }
-
 export async function saveAnonymousWork(state: AnonymousWorkState) {
   const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction("works", "readwrite");
-    tx.objectStore("works").put(state);
-    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
-  });
+  await new Promise<void>((resolve, reject) => { const tx=db.transaction("works","readwrite"); tx.objectStore("works").put(state); tx.oncomplete=()=>resolve(); tx.onerror=()=>reject(tx.error); });
   db.close();
 }
-
 export async function saveAnonymousReading(state: AnonymousReadingHistory) {
-  const db = await openDb();
-  const key = `${state.seriesId}:${state.chapterId ?? "none"}`;
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction("history", "readwrite");
-    tx.objectStore("history").put({ ...state, key });
-    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
-  });
-  db.close();
+  const db=await openDb(); const key=`${state.seriesId}:${state.chapterId??"none"}`;
+  await new Promise<void>((resolve,reject)=>{const tx=db.transaction("history","readwrite");tx.objectStore("history").put({...state,key});tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);}); db.close();
 }
-
-async function readAll<T>(storeName: "works" | "history"): Promise<T[]> {
-  const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, "readonly");
-    const request = tx.objectStore(storeName).getAll();
-    request.onsuccess = () => { db.close(); resolve(request.result as T[]); };
-    request.onerror = () => { db.close(); reject(request.error); };
-  });
+async function readAll<T>(storeName:"works"|"history"):Promise<T[]> {
+  const db=await openDb();
+  return new Promise((resolve,reject)=>{const tx=db.transaction(storeName,"readonly");const request=tx.objectStore(storeName).getAll();request.onsuccess=()=>{db.close();resolve(request.result as T[])};request.onerror=()=>{db.close();reject(request.error)};});
 }
-
 export async function getAnonymousManifest() {
-  if (typeof window === "undefined" || !("indexedDB" in window)) return { works: [], history: [] };
-  return {
-    works: await readAll<AnonymousWorkState>("works"),
-    history: await readAll<AnonymousReadingHistory>("history"),
-  };
+  if (typeof window==="undefined" || !("indexedDB" in window)) return {works:[],history:[]};
+  return {works:await readAll<AnonymousWorkState>("works"),history:await readAll<AnonymousReadingHistory>("history")};
 }
