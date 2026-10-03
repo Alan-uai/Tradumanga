@@ -2,6 +2,16 @@ import { GoogleGenAI } from "@google/genai";
 
 type GeminiJson = Record<string, unknown>;
 
+export const GEMINI_MODEL_FALLBACKS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash",
+] as const;
+
 function parseJson(text: string): GeminiJson {
   const normalized = text
     .trim()
@@ -18,16 +28,52 @@ function getClient() {
   return new GoogleGenAI({ apiKey: key });
 }
 
-function getModel() {
-  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try { return JSON.stringify(error); } catch { return String(error); }
+}
+
+async function generateJson(
+  operation: string,
+  request: Omit<Parameters<GoogleGenAI["models"]["generateContent"]>[0], "model">,
+): Promise<GeminiJson> {
+  const ai = getClient();
+  let lastError: unknown = null;
+
+  for (const model of GEMINI_MODEL_FALLBACKS) {
+    try {
+      const result = await ai.models.generateContent({ ...request, model });
+      const text = result.text || "{}";
+      const parsed = parseJson(text);
+
+      console.info(JSON.stringify({
+        event: "gemini_success",
+        operation,
+        model,
+      }));
+
+      return parsed;
+    } catch (error) {
+      lastError = error;
+      console.warn(JSON.stringify({
+        event: "gemini_model_failed",
+        operation,
+        model,
+        error: getErrorMessage(error),
+      }));
+    }
+  }
+
+  throw new Error(
+    `Gemini indisponível após tentar todos os modelos (${GEMINI_MODEL_FALLBACKS.join(", ")}). Último erro: ${getErrorMessage(lastError)}`,
+  );
 }
 
 export async function analyzePageWithGemini(input: {
   imageBase64: string;
   mimeType: string;
 }): Promise<GeminiJson> {
-  const ai = getClient();
-
   const prompt = `Você é o motor de visão e OCR do Tradumanga.
 Analise esta página de mangá/manhwa para preparar uma tradução posterior.
 
@@ -62,8 +108,7 @@ Retorne SOMENTE JSON válido no formato:
   "warnings": []
 }`;
 
-  const result = await ai.models.generateContent({
-    model: getModel(),
+  return generateJson("analyze_page", {
     contents: [
       {
         role: "user",
@@ -80,8 +125,6 @@ Retorne SOMENTE JSON válido no formato:
     ],
     config: { responseMimeType: "application/json" },
   });
-
-  return parseJson(result.text || "{}");
 }
 
 export async function buildChapterContext(input: {
@@ -93,8 +136,6 @@ export async function buildChapterContext(input: {
     bubbles?: unknown;
   }>;
 }): Promise<GeminiJson> {
-  const ai = getClient();
-
   const prompt = `Você é o Context Engine do Tradumanga.
 Consolide o contexto narrativo deste capítulo para uma etapa posterior de tradução.
 
@@ -117,13 +158,10 @@ Título: ${input.title}
 Análises:
 ${JSON.stringify(input.analyses)}`;
 
-  const result = await ai.models.generateContent({
-    model: getModel(),
+  return generateJson("build_chapter_context", {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     config: { responseMimeType: "application/json" },
   });
-
-  return parseJson(result.text || "{}");
 }
 
 export async function translatePageWithGemini(input: {
@@ -143,8 +181,6 @@ export async function translatePageWithGemini(input: {
     notes?: string | null;
   }>;
 }): Promise<GeminiJson> {
-  const ai = getClient();
-
   const prompt = `Você é o tradutor contextual do Tradumanga.
 Traduza somente os textos fornecidos, do idioma de origem para pt-BR.
 
@@ -187,11 +223,8 @@ ${JSON.stringify(input.glossary)}
 Balões:
 ${JSON.stringify(input.bubbles)}`;
 
-  const result = await ai.models.generateContent({
-    model: getModel(),
+  return generateJson("translate_page", {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     config: { responseMimeType: "application/json" },
   });
-
-  return parseJson(result.text || "{}");
 }
