@@ -325,6 +325,10 @@ async function downloadHtmlImages(url: string, directory: string) {
       if (data.byteLength > MAX_REMOTE_BYTES || totalBytes + data.byteLength > MAX_HTML_TOTAL_BYTES) break;
       const type = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
       if (!type.startsWith("image/")) continue;
+      const imageMeta = await sharp(data).metadata();
+      const width = imageMeta.width ?? 0;
+      const height = imageMeta.height ?? 0;
+      if (width < 200 || height < 200 || width * height < 150_000) continue;
       const file = path.join(imageDir, "page-" + String(i + 1).padStart(4, "0") + ".png");
       await sharp(data).png().toFile(file);
       totalBytes += data.byteLength;

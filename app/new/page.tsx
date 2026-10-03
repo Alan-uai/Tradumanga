@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { saveAnonymousWork } from "@/lib/anonymous/localState";
 
 type NewMode = "automatic" | "manual";
 
@@ -28,6 +29,15 @@ export default function New() {
       setCreating(false);
       return;
     }
+    await saveAnonymousWork({
+      seriesId: payload.seriesId,
+      isBookmarked: false,
+      isFavorite: false,
+      translationCompleted: false,
+      lastChapterId: payload.chapterId ?? null,
+      lastPageNumber: 1,
+      updatedAt: new Date().toISOString(),
+    });
     router.push("/processing/" + payload.seriesId);
   }
 
