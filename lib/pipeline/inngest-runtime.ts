@@ -91,7 +91,7 @@ export async function detectSourceMetadata(url:string):Promise<DetectedSourceMet
   const safe=await assertSafeUrl(url);
   try{
     const {buffer,url:finalUrl}=await fetchSafe(safe,true),html=buffer.toString("utf8");
-    const raw=meta(html,"og:title")??clean(html.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i)?.[1])??meta(html,"og:site_name");
+    const raw=meta(html,"og:title")??clean(html.match(new RegExp("<title[^>]*>([\\s\\S]*?)<\\/title>","i"))?.[1])??meta(html,"og:site_name");
     const title=strip(raw)??raw;
     return {title,chapterNumber:chapterNo(finalUrl,raw),chapterTitle:raw&&title&&raw!==title?raw:null,sourceLanguage:language(meta(html,"og:locale")),extractor:new URL(finalUrl).hostname,detectionMethod:"html"};
   }catch{
