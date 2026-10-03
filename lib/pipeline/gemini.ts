@@ -136,6 +136,10 @@ IMPORTANTE:
 - NÃO invente texto.
 - Identifique somente texto realmente visível.
 - Preserve a ordem e a identidade dos balões.
+- Priorize texto narrativo, caixas de texto e falas que façam parte da obra.
+- NÃO trate como balão de fala textos de scanlation, marcas d'água, logos, URLs, créditos, banners, cabeçalhos, rodapés ou publicidade do site.
+- Não crie um bounding box gigante para uma área de créditos ou marca d'água.
+- Para cada fala, delimite somente a região ocupada pelo texto dentro do balão; não inclua a página inteira nem uma área muito maior que o texto.
 - Descreva a cena e os elementos necessários para que outra etapa compreenda o contexto.
 - Identifique texto vertical/horizontal, onomatopeias, caixas de narração e falas.
 - Forneça polígonos/bounding boxes em coordenadas relativas à imagem quando possível.
