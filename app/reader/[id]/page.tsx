@@ -3,6 +3,7 @@ import { assertSeriesAccess } from "@/lib/anonymous/access";
 import { createAdminClient } from "@/lib/supabase/admin";
 import ReaderProgressTracker from "@/components/reader-progress-tracker";
 import Immersive3D from "@/components/immersive-3d";
+import ReaderClickScroll from "@/components/reader-click-scroll";
 
 export const dynamic = "force-dynamic";
 
@@ -74,7 +75,7 @@ export default async function Reader({
           ))}
         </aside>
 
-        <section className="reader-pages">
+        <ReaderClickScroll>
           <div className="reader-chapter-nav">
             {previousChapter ? <Link className="button ghost" href={`/reader/${id}?chapter=${previousChapter.id}`}>← Anterior</Link> : <span />}
             <strong>{currentChapter ? `Capítulo ${currentChapter.chapter_number}` : "Capítulo"}</strong>
@@ -93,7 +94,7 @@ export default async function Reader({
               <Link className="button primary" href={`/processing/${id}`}>Acompanhar processamento</Link>
             </div>
           )}
-        </section>
+        </ReaderClickScroll>
       </div>
     </main>
   );
