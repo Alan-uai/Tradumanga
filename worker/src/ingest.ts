@@ -91,7 +91,7 @@ function naturalCompare(a: string, b: string) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-async function convertPdf(pdfPath: string, directory: string) {
+export async function convertPdfSource(pdfPath: string, directory: string) {
   const outputPrefix = path.join(directory, "pdf-page");
   await execFileAsync("pdftoppm", ["-png", "-r", process.env.PDF_DPI || "150", pdfPath, outputPrefix], {
     timeout: 180_000,
@@ -142,7 +142,7 @@ export async function prepareChapterSource(input: {
       sourceHash = direct.sourceHash;
       sourceUrl = direct.sourceUrl;
       if (direct.contentType === "application/pdf" || /\\.pdf$/i.test(sourceFile)) {
-        imageFiles = await convertPdf(sourceFile, workDir);
+        imageFiles = await convertPdfSource(sourceFile, workDir);
       } else if (direct.contentType.startsWith("image/")) {
         imageFiles = [sourceFile];
       } else {
