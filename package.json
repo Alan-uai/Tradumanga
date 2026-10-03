@@ -17,7 +17,7 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "sharp": "0.35.5",
-    "inngest": "^4.1.0",
+    "inngest": "^4.21.1",
     "pdf-to-img": "^7.0.0"
   },
   "devDependencies": {
