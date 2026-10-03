@@ -248,13 +248,13 @@ export const renderPage = inngest.createFunction(
       const { data: series } = await admin.from("manga_series").select("id,owner_id,anonymous_session_id").eq("id", chapter.series_id).single();
       if (!series) throw new Error("Obra não encontrada.");
       const { data: bubbles, error: be } = await admin.from("speech_bubbles")
-        .select("polygon,bbox,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
+        .select("polygon,bbox,source_text,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
       if (be) throw be;
       const { data: file, error: fe } = await admin.storage.from("manga-pages").download(page.original_path);
       if (fe || !file) throw fe || new Error("Não foi possível baixar o original.");
       const original = Buffer.from(await file.arrayBuffer());
       await admin.from("pages").update({ status:"rendering",error_message:null }).eq("id",pageId);
-      const rendered=await renderTranslatedPage(original,(bubbles??[]).map((b:any)=>({polygon:b.polygon,bbox:b.bbox,translated_text:b.translated_text,style_json:b.style_json})));
+      const rendered=await renderTranslatedPage(original,(bubbles??[]).map((b:any)=>({polygon:b.polygon,bbox:b.bbox,source_text:b.source_text,translated_text:b.translated_text,style_json:b.style_json})));
       const prefix=actorPrefix(series);
       const translatedPath=`${prefix}/${series.id}/${chapter.chapter_number}/translated/${String(page.page_number).padStart(4,"0")}.png`;
       const maskPath=`${prefix}/${series.id}/${chapter.chapter_number}/masks/${String(page.page_number).padStart(4,"0")}.png`;
