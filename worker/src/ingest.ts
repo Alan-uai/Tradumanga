@@ -97,7 +97,7 @@ export async function convertPdfSource(pdfPath: string, directory: string) {
     timeout: 180_000,
     maxBuffer: 2 * 1024 * 1024,
   });
-  return (await listFiles(directory)).filter((file) => /pdf-page-\\d+\\.png$/i.test(file)).sort(naturalCompare);
+  return (await listFiles(directory)).filter((file) => /pdf-page-\d+\.png$/i.test(file)).sort(naturalCompare);
 }
 
 async function downloadWithGalleryDl(url: string, directory: string) {
@@ -109,12 +109,6 @@ async function downloadWithGalleryDl(url: string, directory: string) {
   return files.filter((file) => /\\.(?:jpe?g|png|webp|gif|bmp|tiff?)$/i.test(file)).sort(naturalCompare);
 }
 
-async function normalizeImage(inputPath: string, outputPath: string) {
-  const buffer = await sharp(inputPath, { failOn: "warning" }).autoOrient().png().toBuffer();
-  await writeFile(outputPath, buffer);
-  const meta = await sharp(buffer).metadata();
-  return { buffer, width: meta.width ?? 0, height: meta.height ?? 0, sha256: sha256(buffer) };
-}
 
 export async function prepareChapterSource(input: {
   chapterId: string;
