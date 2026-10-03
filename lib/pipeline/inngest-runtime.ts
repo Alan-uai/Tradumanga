@@ -382,17 +382,23 @@ function geometry(b:RenderBubble,w:number,h:number){
   const x0=Number(bb.x??0),y0=Number(bb.y??0),bw=Number(bb.width??0),bh=Number(bb.height??0),x=Math.max(0,Math.floor(x0<=1?x0*w:x0)),y=Math.max(0,Math.floor(y0<=1?y0*h:y0)),r=Math.min(w-1,Math.ceil(x+(bw<=1?bw*w:bw))),bt=Math.min(h-1,Math.ceil(y+(bh<=1?bh*h:bh)));return{x,y,width:Math.max(1,r-x+1),height:Math.max(1,bt-y+1),poly:[{x,y},{x:r,y},{x:r,y:bt},{x,y:bt}]};
 }
 function maskSvg(w:number,h:number,poly:{x:number;y:number}[],ox:number,oy:number){const d=poly.map((p,i)=>`${i?"L":"M"}${(p.x-ox).toFixed(1)},${(p.y-oy).toFixed(1)}`).join(" ")+" Z";return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><path d="${d}" fill="white"/></svg>`);}
-function medianKernel(w:number,h:number){const k=Math.min(5,w,h);if(k<3)return 0;return k%2===1?k:k-1;}
 async function fitLayer(buf:Buffer,w:number,h:number){
   const m=await sharp(buf).metadata(),iw=m.width??0,ih=m.height??0;
   if(!iw||!ih)throw new Error("Camada de imagem inválida.");
-  if(iw===w&&ih===h)return{buf,w,h};
-  const resized=await sharp(buf).resize({width:w,height:h,fit:"inside",withoutEnlargement:true}).png().toBuffer();
-  const m2=await sharp(resized).metadata(),rw=m2.width??0,rh=m2.height??0;
-  if(!rw||!rh)throw new Error("Camada de imagem inválida.");
-  if(rw===w&&rh===h)return{buf:resized,w,h};
-  const padded=await sharp(resized).ensureAlpha().extend({top:0,left:0,bottom:h-rh,right:w-rw,background:{r:0,g:0,b:0,alpha:0}}).png().toBuffer();
-  return{buf:padded,w,h};
+  const resized=await sharp(buf).ensureAlpha()
+    .resize({width:Math.max(1,w),height:Math.max(1,h),fit:"fill"})
+    .png().toBuffer();
+  const exact=await sharp(resized).metadata();
+  if(exact.width!==w||exact.height!==h)throw new Error("Camada de texto com dimensões incompatíveis.");
+  return{buf:resized,w,h};
+}
+async function safeMaskBuffer(mask:Buffer,w:number,h:number){
+  const normalized=await sharp(mask).ensureAlpha()
+    .resize({width:Math.max(1,w),height:Math.max(1,h),fit:"fill"})
+    .png().toBuffer();
+  const m=await sharp(normalized).metadata();
+  if(m.width!==w||m.height!==h)throw new Error("Máscara com dimensões incompatíveis.");
+  return normalized;
 }
 async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAlign;font?:string;width:number;height:number}){
   const build=(font?:string)=>sharp({text:{text:input.vertical?[...input.text.replace(/\s+/g,"")].join("\n"):input.text,font,width:input.width,height:input.height,align:input.align,rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
@@ -409,12 +415,18 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
   const overlays:OverlayOptions[]=[],maskLayers:OverlayOptions[]=[];
   for(const b of bubbles){const text=b.translated_text?.trim();if(!text)continue;
     try{
-      const g=geometry(b,w,h),mask=maskSvg(g.width,g.height,g.poly,g.x,g.y);
-      const kernel=medianKernel(g.width,g.height);
-      let patchPipeline=sharp(original).extract({left:g.x,top:g.y,width:g.width,height:g.height});
-      if(kernel)patchPipeline=patchPipeline.median(kernel);
-      const patch=await patchPipeline.png().toBuffer();
-      overlays.push({input:await sharp(patch).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
+      const g=geometry(b,w,h);
+      // Do not run median/rank on giant chapter images. Only process the
+      // local bubble rectangle, and force every intermediate overlay to its
+      // exact dimensions before compositing.
+      const mask=await safeMaskBuffer(maskSvg(g.width,g.height,g.poly,g.x,g.y),g.width,g.height);
+      const patch=await sharp(original)
+        .extract({left:g.x,top:g.y,width:g.width,height:g.height})
+        .ensureAlpha().png().toBuffer();
+      const maskedPatch=await sharp(patch)
+        .composite([{input:mask,blend:"dest-in",left:0,top:0}])
+        .png().toBuffer();
+      overlays.push({input:maskedPatch,left:g.x,top:g.y});
       maskLayers.push({input:mask,left:g.x,top:g.y});
       const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
       const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
