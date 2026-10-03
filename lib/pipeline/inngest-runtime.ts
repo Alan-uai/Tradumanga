@@ -273,6 +273,77 @@ function selectChapterImages(items:InspectedImage[]){
 }
 
 const actorPrefix=(s:{owner_id:string|null;anonymous_session_id:string|null})=>s.owner_id??s.anonymous_session_id??(()=>{throw new Error("Obra sem proprietário ou sessão anônima.")})();
+type SeriesAsset = { url:string; width:number; height:number; score:number; format:string|null };
+
+function seriesAssetCandidates(html:string,base:string){
+  const out:{url:string;score:number;kind:"logo"|"banner"}[]=[]; const seen=new Set<string>();
+  const add=(raw:string,score:number,kind:"logo"|"banner")=>{
+    try{
+      const decoded=decode(raw.trim()); if(!decoded||/^data:/i.test(decoded))return;
+      const u=new URL(decoded,base); if(!/^https?:$/i.test(u.protocol))return;
+      u.hash=""; const url=u.toString(); if(seen.has(url+"|"+kind))return; seen.add(url+"|"+kind);
+      out.push({url,score,kind});
+    }catch{}
+  };
+  const metaImage=meta(html,"og:image")||meta(html,"twitter:image")||meta(html,"image_src");
+  if(metaImage)add(metaImage,180,"banner");
+  const tags=html.match(/<img\b[^>]*>/gi)??[];
+  for(const tag of tags.slice(0,160)){
+    const context=tagContext(tag);
+    if(BAD_RE.test(context)&&!/(?:manga|manhwa|series|comic|work|title)/i.test(context))continue;
+    const attrs=[...tag.matchAll(IMAGE_ATTR_RE)];
+    for(const m of attrs){
+      const values=/srcset|data-srcset/i.test(m[0])?splitSrcset(m[1]):[m[1]];
+      for(const raw of values){
+        const logo=/(?:manga|manhwa|series|comic|work)[-_ ]?(?:logo|brand)|(?:^|[\s_-])(?:logo|brand|emblem)(?:[\s_-]|$)/i.test(context);
+        const banner=/(?:cover|poster|banner|hero|featured|summary[_-]?image|manga[_-]?image)/i.test(context);
+        if(logo)add(raw,190+(/(?:manga|manhwa|series|comic|work)/i.test(context)?60:0),"logo");
+        else if(banner)add(raw,155,"banner");
+      }
+    }
+  }
+  return out.slice(0,80);
+}
+
+async function detectSeriesAssets(html:string,base:string){
+  const candidates=seriesAssetCandidates(html,base), inspected:SeriesAsset[]=[];
+  let cursor=0;
+  const worker=async()=>{
+    while(true){
+      const i=cursor++,candidate=candidates[i]; if(!candidate)return;
+      try{
+        const r=await fetchSafe(candidate.url,false,{referer:base});
+        if(!r.contentType.startsWith("image/"))continue;
+        const m=await sharp(r.buffer,{failOn:"warning"}).metadata(),width=m.width??0,height=m.height??0;
+        if(width<180||height<80)continue;
+        const ratio=width/Math.max(1,height);
+        let score=candidate.score;
+        if(candidate.kind==="banner")score+=ratio>=1.35?90:ratio>=1.05?30:-60;
+        if(candidate.kind==="logo")score+=ratio<=5&&ratio>=0.35?70:-50;
+        if(width>=500)score+=15;
+        if(height>=180)score+=10;
+        inspected.push({url:candidate.url,width,height,score,format:m.format??null});
+      }catch{}
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(6,candidates.length)},worker));
+  const pick=(kind:"logo"|"banner")=>{
+    const ranked=candidates.filter(c=>c.kind===kind).map(c=>inspected.find(x=>x.url===c.url));
+    return ranked.filter(Boolean).sort((a,b)=>(b!.score-a!.score))[0]??null;
+  };
+  return {logo:pick("logo"),banner:pick("banner"),candidateCount:candidates.length};
+}
+
+async function uploadSeriesAsset(admin:any,series:any,asset:SeriesAsset,referer:string,kind:"banner"|"logo"){
+  const r=await fetchSafe(asset.url,false,{referer});
+  const png=await sharp(r.buffer).png().toBuffer();
+  const prefix=actorPrefix(series);
+  const storagePath=prefix+"/"+series.id+"/assets/"+kind+".png";
+  const {error}=await admin.storage.from("manga-pages").upload(storagePath,png,{contentType:"image/png",upsert:true});
+  if(error)throw error;
+  return storagePath;
+}
+
 async function uploadPage(admin:any,series:any,chapter:any,buffer:Buffer,pageNumber:number){
   const meta=await sharp(buffer,{failOn:"warning"}).metadata();if(!meta.width||!meta.height)throw new Error(`Página ${pageNumber} inválida.`);
   const prefix=actorPrefix(series),hash=sha256(buffer),storagePath=`${prefix}/${series.id}/${chapter.chapter_number}/pages/${String(pageNumber).padStart(4,"0")}.png`;
@@ -297,6 +368,16 @@ export async function ingestChapter(chapterId:string){
     if(detected.chapterNumber!==null)patch.chapter_number=detected.chapterNumber;if(detected.chapterTitle)patch.title=detected.chapterTitle;
     const {error}=await admin.from("chapters").update(patch).eq("id",chapter.id);if(error)throw error;
     let {buffer,url}=await fetchSafe(chapter.source_url,true);
+    const seriesAssets=await detectSeriesAssets(buffer.toString("utf8"),url);
+    const assetPatch:Record<string,unknown>={};
+    if(seriesAssets.banner)assetPatch.banner_path=await uploadSeriesAsset(admin,series,seriesAssets.banner,url,"banner");
+    if(seriesAssets.logo)assetPatch.logo_path=await uploadSeriesAsset(admin,series,seriesAssets.logo,url,"logo");
+    if(seriesAssets.banner)assetPatch.cover_path=assetPatch.banner_path;
+    else if(seriesAssets.logo)assetPatch.cover_path=assetPatch.logo_path;
+    if(Object.keys(assetPatch).length){
+      const {error}=await admin.from("manga_series").update(assetPatch).eq("id",series.id);
+      if(error)throw error;
+    }
     let candidates=imageUrls(buffer.toString("utf8"),url);
 
     // Madara's paged reader may intentionally render only page 1. Its
@@ -360,6 +441,7 @@ export async function ingestChapter(chapterId:string){
           inspected_count:inspected.length,
           selected_page_count:selection.selected.length,
           selected_family:selection.family??null,
+          series_assets:{logo:seriesAssets.logo?.url??null,banner:seriesAssets.banner?.url??null,candidate_count:seriesAssets.candidateCount},
           source_variant:url===chapter.source_url?"canonical":"style=list",
         },
       },
