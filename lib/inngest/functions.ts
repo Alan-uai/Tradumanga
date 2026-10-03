@@ -19,6 +19,7 @@ export const processChapter = inngest.createFunction(
     id: "tradumanga-process-chapter",
     triggers: { event: "tradumanga/chapter.process" },
     concurrency: LIMIT,
+    singleton: { key: "event.data.chapterId", mode: "skip" },
     retries: 3,
     onFailure: async ({ event, error }) => {
       const original = (event.data as any)?.event?.data as { chapterId?: string } | undefined;
@@ -44,6 +45,7 @@ export const analyzePage = inngest.createFunction(
     id: "tradumanga-analyze-page",
     triggers: { event: "tradumanga/page.analyze" },
     concurrency: LIMIT,
+    singleton: { key: "event.data.pageId", mode: "skip" },
     retries: 3,
     onFailure: async ({ event, error }) => {
       const admin = createAdminClient();
