@@ -57,6 +57,102 @@ Entidades principais:
 - speech_bubbles
 - translation_jobs
 - glossary_terms
+- anonymous_sessions (ou mecanismo equivalente)
+- user_work_state
+- user_reading_history
+- migration_events/idempotency para sincronização anônima → conta
+
+
+### 4.1 Modelo de acesso: tradução sem login e persistência com login
+
+A tradução deve ser acessível sem autenticação. O login não pode bloquear o fluxo principal de importar/analisar/traduzir/ler uma obra.
+
+A separação de responsabilidades será:
+
+| Ação | Sem login | Com login |
+|---|---|---|
+| Iniciar tradução | Permitido | Permitido |
+| Acompanhar processamento | Permitido | Permitido |
+| Ler obra traduzida | Permitido | Permitido |
+| Registrar automaticamente que a obra foi traduzida | Persistido localmente | Persistido no banco |
+| Registrar obras lidas/progresso | Persistido localmente | Persistido no banco |
+| Bookmark/salvar obra | Estado local pode ser mantido como pendência | Salvo e persistido no banco |
+| Favoritar obra | Estado local pode ser mantido como pendência | Salvo e persistido no banco |
+| Histórico de traduções | Persistido localmente | Persistido no banco |
+| Sincronizar histórico/biblioteca entre dispositivos | Não | Sim |
+
+O sistema nunca deve perguntar ao usuário quais obras ele traduziu, leu ou marcou anteriormente. Esses eventos devem ser capturados automaticamente durante o uso.
+
+#### Identidade anônima
+
+- Cada navegador/dispositivo recebe uma identificação anônima opaca e aleatória, sem representar a identidade civil do usuário.
+- O identificador da sessão anônima deve ser armazenado em cookie seguro; não usar dados pessoais ou um e-mail como identificador.
+- O cliente mantém um registro local estruturado das obras e eventos anônimos.
+- IndexedDB deve ser a persistência principal para esse estado estruturado; localStorage pode guardar somente metadados leves/manifesto quando apropriado.
+- O estado local deve conter IDs/fingerprints necessários para reencontrar a obra, status da tradução, progresso de leitura, timestamps e ações pendentes de biblioteca.
+- O servidor deve conseguir associar os artefatos de uma tradução anônima à sessão anônima sem exigir auth.uid().
+
+#### Login e migração automática
+
+Ao autenticar:
+
+1. a aplicação detecta automaticamente a existência de estado anônimo local;
+2. envia um manifesto de migração idempotente para o backend;
+3. o backend resolve cada obra pelo identificador persistente disponível, priorizando fingerprint/hash e URL canônica quando aplicável;
+4. obras, traduções concluídas, bookmarks, favoritos e histórico de leitura são associados ao user_id;
+5. eventos duplicados não devem gerar registros duplicados;
+6. conflitos devem ser resolvidos por identidade da obra e por timestamps/eventos, sem apagar dados válidos;
+7. somente após confirmação do servidor o cliente marca os itens locais como sincronizados;
+8. o estado local pode permanecer como cache para continuidade offline, mas deixa de ser a fonte de verdade do usuário autenticado.
+
+A migração deve ser segura para repetição: recarregar a página, repetir o login ou reenviar o manifesto não pode duplicar biblioteca, histórico ou traduções.
+
+#### Separação entre conteúdo e biblioteca do usuário
+
+A existência de uma tradução não deve depender da existência de uma conta.
+
+O modelo deve separar:
+
+- conteúdo/artefatos da obra e da tradução;
+- identidade/sessão anônima que está processando ou acessando esse conteúdo;
+- estado pessoal do usuário: bookmark, favorito, histórico, progresso e obras traduzidas.
+
+Isso evita transformar manga_series.owner_id em uma dependência para o fluxo de tradução anônima e permite que a mesma obra/artefato seja reconhecida após o login.
+
+#### Banco de dados
+
+A próxima migration de autenticação/persistência deverá revisar o schema atual e as RLS para suportar o fluxo anônimo com segurança.
+
+Entidades planejadas:
+
+- anonymous_sessions ou mecanismo equivalente para identificar sessões anônimas;
+- user_work_state para bookmark, favorito, tradução concluída e metadados resumidos da obra;
+- user_reading_history para histórico/progresso de leitura;
+- migration_events/idempotency keys para impedir duplicação durante a migração.
+
+As tabelas existentes de manga_series, chapters, pages e translation_jobs deverão ser ajustadas somente onde necessário para que uma sessão anônima possa criar e processar uma tradução com segurança.
+
+RLS deve distinguir explicitamente:
+
+- conteúdo público/anonimamente acessível necessário para tradução e leitura;
+- recursos pertencentes a uma sessão anônima específica;
+- dados pessoais pertencentes exclusivamente ao auth.uid();
+- operações internas do worker usando service role.
+
+Nunca abrir tabelas pessoais com USING/WITH CHECK true apenas para viabilizar o fluxo anônimo.
+
+#### Regra de UX
+
+O usuário deve conseguir chegar à tradução sem uma tela de login obrigatória.
+
+O pedido de autenticação deve aparecer somente quando uma funcionalidade realmente exigir persistência de conta, por exemplo:
+
+- Salvar bookmark;
+- Favoritar;
+- Sincronizar seu histórico;
+- Salvar suas obras traduzidas na conta.
+
+Quando o usuário fizer login, a sincronização deve acontecer automaticamente, sem formulário perguntando quais obras devem ser importadas.
 
 Requisitos:
 
@@ -91,7 +187,11 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 - [x] Storage privado
 - [x] Schema inicial
 - [x] Aplicação Next.js
-- [x] Login
+- [x] Autenticação disponível
+- [ ] tradução sem login como fluxo principal
+- [ ] sessão anônima segura
+- [ ] persistência local de obras traduzidas/lidas e progresso
+- [ ] migração automática do estado anônimo após login
 - [x] Dashboard
 - [x] Criação de obra
 - [x] Upload de capítulo/páginas
@@ -210,7 +310,7 @@ Validações:
 - integridade do Storage;
 - consistência de versão.
 
-### Fase I — Leitor
+### Fase I — Leitor e biblioteca do usuário
 
 - [ ] seleção de capítulo
 - [ ] navegação página a página
@@ -220,6 +320,16 @@ Validações:
 - [ ] edição de balões
 - [ ] regeneração de uma página
 - [ ] progresso do capítulo
+- [ ] tradução sem login
+- [ ] registro local automático de obras traduzidas
+- [ ] registro local automático de obras lidas/progresso
+- [ ] bookmark/salvar obra com login
+- [ ] favoritos com login
+- [ ] histórico de leitura com login
+- [ ] biblioteca de obras traduzidas com login
+- [ ] sincronização automática do estado anônimo após login
+- [ ] idempotência da migração
+- [ ] resolução de conflitos entre estado local e estado já existente na conta
 
 ### Fase J — Observabilidade e escala
 
@@ -279,6 +389,8 @@ O commit anterior, `6a3fa3157e51d1ed119bc5b1359f5b516c015a76`, foi confirmado co
 Próxima etapa:
 
 **Fase B — Worker externo + processamento por página**, começando pelo consumidor da fila e pelo dispatcher de `process_chapter`.
+
+A autenticação/persistência anônima deve ser implementada antes de fechar a experiência de tradução no Reader, mas não deve bloquear o worker: o pipeline de tradução deve continuar independente de conta autenticada.
 
 ## 10. Critério de conclusão
 
