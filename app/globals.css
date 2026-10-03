@@ -45,7 +45,7 @@ input:focus{border-color:#5b5963;box-shadow:0 0 0 3px rgba(217,54,62,.12)}
 input[type=file]{padding:10px}
 .ok{color:var(--green)}
 .err{color:#ff8c93}
-.head{padding:60px 0 30px;display:flex;align-items:end;justify-content:space-between}
+.head{padding:60px 0 30px;display:flex;align-items:flex-end;justify-content:space-between}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
 .work{color:var(--text);text-decoration:none;display:grid;gap:10px}
 .cover{aspect-ratio:3/4;background:linear-gradient(140deg,#2b2b33,#101014);border-radius:10px;display:grid;place-items:center;font:80px Georgia;color:#777}
@@ -90,7 +90,7 @@ input[type=file]{padding:10px}
 .reader-shell{max-width:1440px}
 .reader-topbar{position:sticky;top:0;background:rgba(8,8,10,.9);backdrop-filter:blur(12px);z-index:5}
 .reader-actions{display:flex;align-items:center;gap:6px}
-.reader-heading{padding:45px 0 25px;display:flex;justify-content:space-between;align-items:end;gap:20px}
+.reader-heading{padding:45px 0 25px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px}
 .reader-heading h1{font-size:48px}
 .reader-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:20px;align-items:start}
 .chapter-rail{position:sticky;top:100px;background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:12px}
