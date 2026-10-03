@@ -145,7 +145,10 @@ def render(original_path, output_path, mask_path, bubbles):
                 draw.text((cx, cy), line, font=font, fill=color)
                 cy += line_h + int(font.size * 0.18)
 
-    result = cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+    rendered = np.asarray(pil)
+    base_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    clipped = np.where(mask[..., None] > 0, rendered, base_rgb).astype(np.uint8)
+    result = cv2.cvtColor(clipped, cv2.COLOR_RGB2BGR)
     cv2.imwrite(str(output_path), result, [cv2.IMWRITE_PNG_COMPRESSION, 6])
     cv2.imwrite(str(mask_path), mask, [cv2.IMWRITE_PNG_COMPRESSION, 9])
 
