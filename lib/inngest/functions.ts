@@ -276,4 +276,45 @@ export const renderPage = inngest.createFunction(
   },
 );
 
-export const functions = [processChapter, analyzePage, translatePage, renderPage];
+
+export const reconcileUntranslatedPages = inngest.createFunction(
+  {
+    id: "tradumanga-reconcile-untranslated-pages",
+    triggers: { cron: "*/5 * * * *" },
+    concurrency: { scope: "account" as const, key: '"tradumanga-reconcile"', limit: 1 },
+    retries: 2,
+  },
+  async ({ step }) => {
+    const pageIds = await step.run("find-untranslated-pages", async () => {
+      const admin = createAdminClient();
+      const { data, error } = await admin
+        .from("pages")
+        .select("id,chapters!inner(context_updated_at)")
+        .is("translated_path", null)
+        .eq("status", "analyzed")
+        .not("chapters.context_updated_at", "is", null)
+        .order("created_at", { ascending: true })
+        .limit(100);
+      if (error) throw error;
+      return (data ?? []).map((page: any) => page.id as string);
+    });
+
+    if (!pageIds.length) return { dispatched: 0 };
+
+    await step.sendEvent(
+      "dispatch-untranslated-pages",
+      pageIds.map((pageId) => ({
+        id: `translate:${pageId}`,
+        name: "tradumanga/page.translate",
+        data: {
+          pageId,
+          source: "inngest-untranslated-page-reconciler",
+        },
+      })),
+    );
+
+    return { dispatched: pageIds.length };
+  },
+);
+
+export const functions = [processChapter, analyzePage, translatePage, renderPage, reconcileUntranslatedPages];
