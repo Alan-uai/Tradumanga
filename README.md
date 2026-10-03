@@ -1,63 +1,75 @@
 # Tradumanga
 
-Next.js + Supabase + Gemini para tradução contextual de mangás/manhwas para pt-BR.
+Next.js + Supabase + Gemini + Inngest para tradução contextual de mangás/manhwas para pt-BR.
 
-## Infraestrutura
+## Arquitetura
 
-- GitHub: `Alan-uai/Tradumanga`
-- Supabase: projeto independente `Tradumanga`, região sa-east-1
-- PostgreSQL + pgvector
-- Supabase Auth + Storage
-- Bucket privado `manga-pages`
-- RLS por proprietário
-- Tabelas de obras, capítulos, páginas, análises multimodais, balões, jobs e glossário
-- Worker Docker separado para o pipeline pesado
+- Next.js/TypeScript na Vercel
+- Inngest Cloud para orquestração durável
+- Supabase PostgreSQL/Auth/Storage
+- Gemini multimodal para OCR, contexto e tradução
+- Sharp para ingestão, composição determinística e QA
+- pdf-to-img para rasterização de PDF em Node
+- bucket privado manga-pages
 
-## Variáveis da aplicação web
+O antigo worker Docker foi removido. Não existe mais processo contínuo, polling, lease ou dependência de Python/OpenCV/Poppler/gallery-dl no caminho de produção.
+
+## Pipeline
+
+entrada → Inngest → ingestão → análise Gemini → Context Engine → tradução → renderização Sharp → QA de pixels → Storage → Reader
+
+As páginas são processadas como funções independentes. O limite global do pipeline é de 5 etapas simultâneas, usando uma fila de concorrência compartilhada no Inngest.
+
+1. tradumanga/chapter.process
+2. tradumanga/page.analyze
+3. tradumanga/page.translate
+4. tradumanga/page.render
+
+Cada etapa usa retries do Inngest e grava o estado operacional no Supabase.
+
+## Inngest
+
+O endpoint é /api/inngest.
 
 Configure na Vercel:
+
+```env
+INNGEST_SIGNING_KEY=
+INNGEST_EVENT_KEY=
+```
+
+A integração oficial da Vercel com Inngest pode provisionar a signing key automaticamente. Para desenvolvimento local, use INNGEST_DEV=1 e o Inngest Dev Server.
+
+## Variáveis server-side
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 GEMINI_API_KEY=
+INNGEST_SIGNING_KEY=
+INNGEST_EVENT_KEY=
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY` e `GEMINI_API_KEY` são exclusivamente server-side. Não devem ser expostas ao cliente.
+SUPABASE_SERVICE_ROLE_KEY, GEMINI_API_KEY e as chaves do Inngest são exclusivamente server-side.
 
-## Variáveis do worker
+## Fontes
 
-O worker Docker precisa de:
+- Imagens: páginas existentes no Storage são normalizadas e processadas.
+- PDF: rasterização feita por pdf-to-img, sem Poppler.
+- URL: o sistema valida SSRF, identifica título/capítulo por metadata HTML/URL e extrai imagens diretamente da página.
 
-```env
-NEXT_PUBLIC_SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
-GEMINI_API_KEY=
-WORKER_ID=tradumanga-worker
-JOB_LEASE_SECONDS=1800
-JOB_HEARTBEAT_MS=60000
-WORKER_POLL_INTERVAL_MS=2000
-WORKER_TMP_DIR=/tmp/tradumanga
-GALLERY_DL_METADATA_TIMEOUT_MS=90000
-GALLERY_DL_TIMEOUT_MS=300000
-```
+A migração para Vercel/Inngest removeu a possibilidade de executar o binário gallery-dl. URLs que dependem de JavaScript ou de um extrator específico que não exponha as imagens no HTML precisam de um adaptador de fonte específico; isso é preferível a reintroduzir Docker no fluxo principal.
 
-O worker deve rodar como processo contínuo em infraestrutura Docker. A Vercel hospeda a aplicação web/API; ela não executa esse worker persistente.
+## Integridade
 
-## Deploy do worker
+A imagem original nunca é sobrescrita.
 
-O repositório contém `worker/Dockerfile` e `render.yaml`. O serviço Docker deve ser configurado com as três credenciais secretas do worker e iniciado a partir da branch `main`.
+O renderer cria a máscara somente a partir das regiões autorizadas pelo Gemini. O QA compara os pixels decodificados do original e do resultado e exige:
 
-O worker consome `translation_jobs` do Supabase, renova o lease durante jobs longos e executa:
+diff(translated, original) ∩ outside_mask = 0
 
-1. ingestão da fonte;
-2. OCR/análise multimodal;
-3. Context Engine;
-4. tradução contextual;
-5. renderização determinística;
-6. QA de integridade de pixels;
-7. armazenamento e conclusão do capítulo.
+A página traduzida e a máscara são armazenadas como artefatos separados.
 
 ## Desenvolvimento
 
@@ -66,8 +78,14 @@ npm install
 npm run dev
 ```
 
-Para executar o worker localmente:
+Para testar o fluxo localmente com o Inngest Dev Server:
 
 ```bash
-npm run worker
+INNGEST_DEV=1 npm run dev
 ```
+
+Em outro terminal, execute o Dev Server do Inngest e aponte-o para http://localhost:3000/api/inngest.
+
+## Supabase
+
+O projeto usado pelo Tradumanga é voaavcicveaiitzbaogx. O projeto Otaku é independente e não faz parte desta arquitetura.
