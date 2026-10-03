@@ -21,7 +21,8 @@ export const processChapter = inngest.createFunction(
     concurrency: LIMIT,
     retries: 3,
     onFailure: async ({ event, error }) => {
-      if (event.data?.chapterId) await markChapterError(event.data.chapterId, error.message);
+      const original = (event.data as any)?.event?.data as { chapterId?: string } | undefined;
+      if (original?.chapterId) await markChapterError(original.chapterId, error.message);
     },
   },
   async ({ event, step }) => {
@@ -46,7 +47,8 @@ export const analyzePage = inngest.createFunction(
     retries: 3,
     onFailure: async ({ event, error }) => {
       const admin = createAdminClient();
-      await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", event.data.pageId);
+      const original = (event.data as any)?.event?.data as { pageId?: string } | undefined;
+      if (original?.pageId) await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", original.pageId);
     },
   },
   async ({ event, step }) => {
