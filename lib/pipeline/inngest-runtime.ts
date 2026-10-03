@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import sharp from "sharp";
+import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
@@ -170,12 +170,13 @@ function geometry(b:RenderBubble,w:number,h:number){
 function maskSvg(w:number,h:number,poly:{x:number;y:number}[],ox:number,oy:number){const d=poly.map((p,i)=>`${i?"L":"M"}${(p.x-ox).toFixed(1)},${(p.y-oy).toFixed(1)}`).join(" ")+" Z";return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><path d="${d}" fill="white"/></svg>`);}
 export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[]){
   const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;if(!w||!h)throw new Error("Imagem original inválida.");
-  const overlays:sharp.OverlayOptions[]=[],maskLayers:sharp.OverlayOptions[]=[];
+  const overlays:OverlayOptions[]=[],maskLayers:OverlayOptions[]=[];
   for(const b of bubbles){const text=b.translated_text?.trim();if(!text)continue;const g=geometry(b,w,h),mask=maskSvg(g.width,g.height,g.poly,g.x,g.y);
     const patch=await sharp(original).extract({left:g.x,top:g.y,width:g.width,height:g.height}).median(5).png().toBuffer();
     overlays.push({input:await sharp(patch).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
     const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
-    const textLayer=await sharp({text:{text:vertical?[...text.replace(/\s+/g,"")].join("\n"):text,font:String(style.font??"sans"),width:Math.max(1,g.width-12),height:Math.max(1,g.height-12),align:String(style.align??"center"),rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
+    const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
+    const textLayer=await sharp({text:{text:vertical?[...text.replace(/\s+/g,"")].join("\n"):text,font:String(style.font??"sans"),width:Math.max(1,g.width-12),height:Math.max(1,g.height-12),align,rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
     overlays.push({input:await sharp(textLayer).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x+6,top:g.y+6});maskLayers.push({input:mask,left:g.x,top:g.y});
   }
   const translated=await sharp(original).composite(overlays).png().toBuffer();

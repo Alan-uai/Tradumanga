@@ -171,7 +171,8 @@ export const translatePage = inngest.createFunction(
     retries: 3,
     onFailure: async ({ event, error }) => {
       const admin = createAdminClient();
-      await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", event.data.pageId);
+      const original = (event.data as any)?.event?.data as { pageId?: string } | undefined;
+      if (original?.pageId) await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", original.pageId);
     },
   },
   async ({ event, step }) => {
@@ -231,7 +232,8 @@ export const renderPage = inngest.createFunction(
     retries: 3,
     onFailure: async ({ event, error }) => {
       const admin = createAdminClient();
-      await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", event.data.pageId);
+      const original = (event.data as any)?.event?.data as { pageId?: string } | undefined;
+      if (original?.pageId) await admin.from("pages").update({ status: "error", error_message: error.message }).eq("id", original.pageId);
     },
   },
   async ({ event, step }) => {

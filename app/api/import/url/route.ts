@@ -18,7 +18,7 @@ export async function POST(req: Request) {
     const {data:candidates,error:lookupError}=await admin.from("chapters").select("id,series_id,chapter_number,title,status,manga_series!inner(id,title,owner_id,anonymous_session_id,status)").eq("source_canonical_url",sourceUrl).limit(20);
     if(lookupError)return NextResponse.json({error:lookupError.message},{status:500});
     const existing=(candidates??[]).find((item:any)=>actor.userId?item.manga_series.owner_id===actor.userId:item.manga_series.anonymous_session_id===actor.anonymousSessionId);
-    if(existing){const s=existing.manga_series;return NextResponse.json({reused:true,seriesId:s.id,chapterId:existing.id,title:s.title,chapterNumber:existing.chapter_number,status:existing.status});}
+    if(existing){const s=existing.manga_series as unknown as {id:string;title:string};return NextResponse.json({reused:true,seriesId:s.id,chapterId:existing.id,title:s.title,chapterNumber:existing.chapter_number,status:existing.status});}
     const fingerprint=createHash("sha256").update(sourceUrl).digest("hex").slice(0,16),baseTitle="Detectando obra…",slugBase=slugify("obra-"+fingerprint)||("obra-"+fingerprint);
     let slug=slugBase,suffix=2;while(true){const {data,error}=await admin.from("manga_series").select("id").eq("slug",slug).maybeSingle();if(error)return NextResponse.json({error:error.message},{status:500});if(!data)break;slug=slugBase+"-"+suffix++;}
     const {data:series,error:se}=await admin.from("manga_series").insert({owner_id:actor.userId,anonymous_session_id:actor.anonymousSessionId,title:baseTitle,slug,status:"processing"}).select("id,title,status").single();
