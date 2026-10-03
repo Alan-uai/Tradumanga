@@ -45,6 +45,9 @@ input:focus{border-color:#5b5963;box-shadow:0 0 0 3px rgba(217,54,62,.12)}
 input[type=file]{padding:10px}
 .ok{color:var(--green)}
 .err{color:#ff8c93}
+.sep{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px;margin-top:20px}
+.sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--line)}
+.button:disabled{opacity:.6;pointer-events:none}
 .head{padding:60px 0 30px;display:flex;align-items:flex-end;justify-content:space-between}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
 .work{color:var(--text);text-decoration:none;display:grid;gap:10px}
