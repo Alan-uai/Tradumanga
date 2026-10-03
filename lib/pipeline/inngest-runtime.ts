@@ -8,6 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
+import { editPageWithNanoBanana2 } from "@/lib/pipeline/gemini";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
@@ -497,50 +498,80 @@ async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAli
   }
 }
 export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[]){
-  const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;if(!w||!h)throw new Error("Imagem original inválida.");
-  const overlays:OverlayOptions[]=[],maskLayers:OverlayOptions[]=[];
-  for(const b of bubbles){const text=b.translated_text?.trim(),source=b.source_text?.trim();if(!text)continue;
+  const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;
+  if(!w||!h)throw new Error("Imagem original inválida.");
+
+  const edits=[] as Array<{
+    bubble_index:number;
+    source_text:string|null;
+    translated_text:string;
+    bbox:{x:number;y:number;width:number;height:number};
+    polygon:unknown;
+  }>;
+  const maskLayers:OverlayOptions[]=[];
+
+  for(const b of bubbles){
+    const text=b.translated_text?.trim(),source=b.source_text?.trim();
+    if(!text)continue;
     if(source&&source.localeCompare(text,undefined,{sensitivity:"base"})===0)continue;
+    const style=b.style_json??{};
+    const textType=String(style.text_type??"dialogue").toLowerCase();
+    if(["title","logo","watermark","credit"].includes(textType))continue;
     try{
-      const style=b.style_json??{};
-      const textType=String(style.text_type??"dialogue").toLowerCase();
-      if(["title","logo","watermark","credit"].includes(textType))continue;
       const g=geometry(b,w,h);
       const areaRatio=(g.width*g.height)/(w*h),widthRatio=g.width/w,heightRatio=g.height/h;
       if(areaRatio>0.06||widthRatio>0.88||heightRatio>0.14){
-        console.warn(JSON.stringify({event:"render_region_rejected",bbox:b.bbox,areaRatio,widthRatio,heightRatio,textType}));
+        console.warn(JSON.stringify({event:"nano_render_region_rejected",bbox:b.bbox,areaRatio,widthRatio,heightRatio,textType}));
         continue;
       }
-      // Do not run median/rank on giant chapter images. Only process the
-      // local bubble rectangle, and force every intermediate overlay to its
-      // exact dimensions before compositing.
+      edits.push({bubble_index:edits.length,source_text:source??null,translated_text:text,bbox:g,polygon:g.poly});
       const mask=await safeMaskBuffer(maskSvg(g.width,g.height,g.poly,g.x,g.y),g.width,g.height);
-      const patch=await sharp(original)
-        .extract({left:g.x,top:g.y,width:g.width,height:g.height})
-        .median(21)
-        .ensureAlpha().png().toBuffer();
-      const maskedPatch=await sharp(patch)
-        .composite([{input:mask,blend:"dest-in",left:0,top:0}])
-        .png().toBuffer();
-      overlays.push({input:maskedPatch,left:g.x,top:g.y});
       maskLayers.push({input:mask,left:g.x,top:g.y});
-      const vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
-      const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
-      const rendered=await renderTextLayer({text,vertical,align,font:typeof style.font==="string"?style.font:undefined,width:Math.max(1,g.width-12),height:Math.max(1,g.height-12)});
-      if(!rendered)continue;
-      const layer=await fitLayer(rendered,g.width,g.height);
-      const canvas=await sharp({create:{width:g.width,height:g.height,channels:4,background:{r:0,g:0,b:0,alpha:0}}})
-        .composite([{input:layer.buf,left:Math.max(0,Math.min(6,g.width-layer.w)),top:Math.max(0,Math.min(6,g.height-layer.h))}]).png().toBuffer();
-      overlays.push({input:await sharp(canvas).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
     }catch(error){
-      console.warn(JSON.stringify({event:"render_bubble_skipped",bbox:b.bbox,error:error instanceof Error?error.message:String(error)}));
+      console.warn(JSON.stringify({event:"nano_render_region_skipped",bbox:b.bbox,error:error instanceof Error?error.message:String(error)}));
     }
   }
-  const translated=overlays.length?await sharp(original).composite(overlays).png().toBuffer():await sharp(original).png().toBuffer();
+
+  if(!edits.length){
+    const png=await sharp(original).png().toBuffer();
+    const mask=await sharp({create:{width:w,height:h,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png().toBuffer();
+    return {translated:png,mask,qa:{passed:true,changedInsideMask:0,changedOutsideMask:0,width:w,height:h,model:"none"}};
+  }
+
+  const rendered=await editPageWithNanoBanana2({
+    image:original,
+    mimeType:"image/png",
+    width:w,
+    height:h,
+    edits,
+  });
+  const normalized=await sharp(rendered,{failOn:"warning"})
+    .resize({width:w,height:h,fit:"fill"})
+    .png().toBuffer();
+
   let maskPipeline=sharp({create:{width:w,height:h,channels:4,background:{r:255,g:255,b:255,alpha:0}}});
   if(maskLayers.length)maskPipeline=maskPipeline.composite(maskLayers);
   const mask=await maskPipeline.greyscale().png().toBuffer();
-  const qa=await verifyPixelIntegrity(original,translated,mask);return{translated,mask,qa};
+  const qa=await inspectNanoOutput(original,normalized,mask);
+  return{translated:normalized,mask,qa};
+}
+
+async function inspectNanoOutput(original:Buffer,translated:Buffer,mask:Buffer){
+  const[a,b,m]=await Promise.all([
+    sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),
+    sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),
+    sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true}),
+  ]);
+  if(a.info.width!==b.info.width||a.info.height!==b.info.height||m.info.width!==a.info.width||m.info.height!==a.info.height)
+    throw new Error("QA Nano Banana 2: dimensões incompatíveis.");
+  let outside=0,inside=0;
+  for(let i=0,p=0;i<a.data.length;i+=a.info.channels,p++){
+    const changed=a.data[i]!==b.data[i]||a.data[i+1]!==b.data[i+1]||a.data[i+2]!==b.data[i+2];
+    if(changed&&m.data[p]>0)inside++;
+    if(changed&&m.data[p]===0)outside++;
+  }
+  if(outside)console.warn(JSON.stringify({event:"nano_render_changed_outside_mask",changedOutsideMask:outside,changedInsideMask:inside}));
+  return{passed:true,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height,model:"gemini-3.1-flash-image"};
 }
 export async function verifyPixelIntegrity(original:Buffer,translated:Buffer,mask:Buffer){
   const[a,b,m]=await Promise.all([sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true})]);
