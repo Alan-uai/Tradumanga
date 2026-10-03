@@ -24,7 +24,7 @@ Princípio central:
 - pgvector
 - Gemini multimodal
 - Vercel para aplicação web
-- worker externo para tarefas pesadas/assíncronas
+- Inngest para tarefas pesadas/assíncronas
 - renderer determinístico para composição da página traduzida
 
 ## 3. Arquitetura
@@ -198,7 +198,7 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 - [x] Endpoint inicial Gemini
 - [x] Deploy Vercel funcional
 
-### Fase B — Orquestração
+### Fase B — Orquestração (Inngest)
 
 - [x] fila de jobs transacionais
 - [x] claim atômico com SKIP LOCKED
@@ -210,17 +210,15 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 
 Implementado nesta fase:
 
-- lease de worker em `translation_jobs`;
-- `worker_id`, `lock_expires_at` e `max_attempts`;
-- claim atômico;
-- conclusão/falha controladas pelo worker;
-- recuperação automática de leases expirados;
-- limite de 3 tentativas por padrão;
-- função idempotente `enqueue_translation_job`;
-- endpoint Next.js `POST /api/jobs/enqueue`;
-- upload de capítulo agora cria/enfileira o job `process_chapter`.
+- endpoint /api/inngest servido pelo Next.js;
+- funções duráveis para ingestão, análise, contexto, tradução, renderização e QA;
+- fan-out por página usando eventos idempotentes;
+- retries gerenciados pelo Inngest;
+- concorrência global compartilhada limitada a 5 etapas simultâneas;
+- Supabase permanece como fonte de verdade para obras, capítulos, páginas, análises e artefatos;
+- a tabela translation_jobs permanece apenas para compatibilidade/histórico e não é mais consumida pelo runtime.
 
-A execução pesada continua fora do request HTTP. O worker externo agora executa ingestão, análise, contexto, tradução, renderização e QA.
+A execução pesada saiu do worker Docker e passou para funções Node.js hospedadas na Vercel e orquestradas pelo Inngest.
 
 ### Fase C — Ingestão e cache
 
@@ -232,9 +230,7 @@ A execução pesada continua fora do request HTTP. O worker externo agora execut
 - [ ] reutilização de capítulos e imagens já importados
 - [x] versionamento dos artefatos
 
-Entradas reais implementadas: imagens, PDF e URL. URLs são validadas contra SSRF básico. No modo automático, o worker tenta identificar título/capítulo com metadata do `gallery-dl`, usa metadata HTML como fallback e baixa as páginas com `gallery-dl`; se o extrator não conseguir processar a URL, o worker tenta extrair as imagens da própria página HTML. PDF é rasterizado no worker com `pdftoppm`.
-
-Para fontes externas, o downloader/worker deve ficar separado do runtime web.
+Entradas reais implementadas: imagens, PDF e URL. URLs são validadas contra SSRF básico, metadata HTML/URL é usada para identificar obra/capítulo e as imagens são baixadas diretamente em Node.js. PDF é rasterizado com pdf-to-img. Fontes que exigem JavaScript ou um extrator específico precisam de adaptador próprio; gallery-dl não faz mais parte do runtime.
 
 ### Fase D — Visão e OCR contextual
 
@@ -387,11 +383,11 @@ Entradas aceitas pela UI:
 - PDF;
 - URL de capítulo/volume.
 
-O worker externo é responsável pelas operações pesadas. O renderer usa uma máscara derivada das regiões analisadas e verifica programaticamente que nenhuma diferença ocorreu fora dessa máscara. A página traduzida é sempre armazenada em artefato separado de `original_path`.
+As funções Inngest são responsáveis pelas operações pesadas. O renderer usa uma máscara derivada das regiões analisadas e verifica programaticamente que nenhuma diferença ocorreu fora dessa máscara. A página traduzida é sempre armazenada em artefato separado de `original_path`.
 
 UI/UX: o Figma existente foi usado como referência de tokens e componentes, e uma tela editável `00 — Import` foi adicionada ao arquivo `Tradumanga — UI/UX`. A implementação web recebeu os estados correspondentes de importação, processamento e leitura.
 
-Pendências para declarar a fase operacionalmente concluída: executar CI/build, construir e executar o Docker worker com credenciais reais, testar um capítulo real ponta a ponta, validar os artefatos renderizados visualmente, concluir deduplicação/reuso e fechar a revisão humana no Reader.
+Pendências para declarar a fase operacionalmente concluída: executar CI/build, sincronizar o endpoint com o Inngest Cloud, testar um capítulo real ponta a ponta, validar os artefatos renderizados visualmente, concluir deduplicação/reuso e fechar a revisão humana no Reader.
 
 
 
