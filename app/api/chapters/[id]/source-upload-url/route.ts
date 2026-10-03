@@ -27,7 +27,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { data: signed, error } = await admin.storage
       .from("manga-pages")
       .createSignedUploadUrl(path, { upsert: true });
-    if (signedError(signed, error)) return NextResponse.json({ error: error?.message ?? "Falha ao criar upload." }, { status: 500 });
+    if (error || !signed) return NextResponse.json({ error: error?.message ?? "Falha ao criar upload." }, { status: 500 });
 
     const { error: updateError } = await admin.from("chapters").update({
       source_type: "pdf",
@@ -41,8 +41,4 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Falha ao preparar PDF." }, { status: 500 });
   }
-}
-
-function signedError<T>(data: T | null, error: { message?: string } | null): boolean {
-  return Boolean(error || !data);
 }
