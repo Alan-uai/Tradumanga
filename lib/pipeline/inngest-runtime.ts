@@ -50,10 +50,14 @@ export async function assertSafeUrl(raw: string) {
   return url.toString();
 }
 
-async function fetchSafe(raw: string, html=false) {
+async function fetchSafe(raw: string, html=false, extraHeaders:Record<string,string>={}) {
   let current=await assertSafeUrl(raw);
   for(let hop=0;hop<5;hop++){
-    const response=await fetch(current,{redirect:"manual",headers:{"user-agent":"Mozilla/5.0 (compatible; Tradumanga/2.0)"},signal:AbortSignal.timeout(html?60000:90000)});
+    const response=await fetch(current,{redirect:"manual",headers:{
+      "user-agent":"Mozilla/5.0 (compatible; Tradumanga/3.0)",
+      "accept":html?"text/html,application/xhtml+xml;q=0.9,*/*;q=0.8":"image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+      ...extraHeaders,
+    },signal:AbortSignal.timeout(html?60000:90000)});
     if(response.status>=300&&response.status<400){
       const location=response.headers.get("location"); if(!location) throw new Error("Redirecionamento sem destino.");
       current=await assertSafeUrl(new URL(location,current).toString()); continue;
@@ -100,29 +104,174 @@ export async function detectSourceMetadata(url:string):Promise<DetectedSourceMet
   }
 }
 
+type ImageCandidate = {
+  url: string;
+  order: number;
+  context: string;
+  selectorHint: boolean;
+  scoreHint: number;
+};
+
+type InspectedImage = ImageCandidate & {
+  width: number;
+  height: number;
+  bytes: number;
+  format: string | null;
+  score: number;
+};
+
+const IMAGE_ATTR_RE=/(?:src|data-src|data-original|data-lazy-src|data-full-url|data-image-url|data-url|srcset|data-srcset)=["']([^"']+)["']/gi;
+const STRONG_READER_RE=/(?:wp-manga-chapter-img|reading-content|page-break|chapter-images|chaptercontent|readerarea|read-content|read-content|manga-reader|chapter-img|chapter-image)/i;
+const BAD_RE=/(?:logo|banner|header|footer|avatar|thumbnail|thumb|cover|icon|favicon|social|related|recommended|author|profile|advert|sidebar|menu|loading|placeholder)/i;
+
+function splitSrcset(value:string){
+  return value.split(",").map(v=>v.trim().split(/\s+/)[0]).filter(Boolean);
+}
+
+function tagContext(tag:string){
+  const cls=tag.match(/(?:class|id)=["']([^"']+)["']/i)?.[1]??"";
+  const alt=tag.match(/alt=["']([^"']+)["']/i)?.[1]??"";
+  return `${cls} ${alt}`;
+}
+
+function addImageCandidate(out:ImageCandidate[],seen:Set<string>,raw:string,base:string,context:string,orderRef:{value:number}){
+  try{
+    const decoded=decode(raw.trim());
+    if(!decoded||/^data:/i.test(decoded))return;
+    const u=new URL(decoded,base);
+    if(!/^https?:$/i.test(u.protocol))return;
+    u.hash="";
+    const url=u.toString();
+    if(seen.has(url))return;
+    seen.add(url);
+    const strong=STRONG_READER_RE.test(context),bad=BAD_RE.test(context);
+    out.push({url,order:orderRef.value++,context,selectorHint:strong,scoreHint:(strong?140:0)-(bad?180:0)});
+  }catch{}
+}
+
+/**
+ * Madara first: the chapter images are normally inside .reading-content and
+ * carry .wp-manga-chapter-img. This is intentionally higher priority than
+ * generic <img> discovery so site chrome can never win merely by appearing
+ * earlier in the HTML.
+ */
 function imageUrls(html:string,base:string){
-  const out:string[]=[],seen=new Set<string>();
-  const add=(raw:string)=>{
-    try{
-      const u=new URL(decode(raw),base).toString();
-      if(!seen.has(u)&&/^https?:$/i.test(new URL(u).protocol)){seen.add(u);out.push(u);}
-    }catch{}
-  };
-  const imgTagRe=new RegExp("<img\\b[^>]*>","gi");
-  const attrRe=/(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=["']([^"']+)["']/gi;
-  for(const tag of html.match(imgTagRe)??[]){
-    for(const m of tag.matchAll(attrRe)){
-      add(m[1].split(",")[0].trim().split(/\s+/)[0]);
+  const out:ImageCandidate[]=[],seen=new Set<string>(),orderRef={value:0};
+
+  const pushTags=(tags:string[],forceReader:boolean)=>{
+    for(const tag of tags){
+      const context=tagContext(tag);
+      const reader=forceReader||STRONG_READER_RE.test(context);
+      const attrs=[...tag.matchAll(IMAGE_ATTR_RE)];
+      for(const m of attrs){
+        const values=m[0].toLowerCase().startsWith("srcset")||m[0].toLowerCase().startsWith("data-srcset")
+          ?splitSrcset(m[1]):[m[1]];
+        for(const value of values)addImageCandidate(out,seen,value,base,reader?`reader ${context}`:context,orderRef);
+      }
+      if(out.length>=MAX_HTML_IMAGES)return;
     }
-    if(out.length>=MAX_HTML_IMAGES)break;
+  };
+
+  const allTags=html.match(/<img\b[^>]*>/gi)??[];
+  const readerTags=allTags.filter(tag=>{
+    const ctx=tagContext(tag);
+    return /wp-manga-chapter-img/i.test(ctx)||/reading-content/i.test(ctx)||/page-break/i.test(ctx)||/readerarea/i.test(ctx);
+  });
+  pushTags(readerTags,true);
+
+  // Some Madara child themes keep only one page in the initial paged reader.
+  // The list view exposes the complete chapter image set as static HTML.
+  if(out.length<2){
+    const listTags=allTags.filter(tag=>/wp-manga-chapter-img/i.test(tagContext(tag)));
+    pushTags(listTags,true);
   }
-  const directImageRe=/https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp)(?:\?[^"'\s<>]*)?/gi;
+
+  // Generic reader containers used by non-standard Madara themes.
+  if(out.length<2){
+    const containerRe=/<(?:div|section|main)[^>]+(?:reading-content|read-content|readerarea|chapter-content|chapter-images|chaptercontent)[^>]*>[\s\S]*?<\/(?:div|section|main)>/gi;
+    for(const block of html.match(containerRe)??[]){
+      pushTags(block.match(/<img\b[^>]*>/gi)??[],true);
+      if(out.length>=MAX_HTML_IMAGES)break;
+    }
+  }
+
+  // Only after all reader-specific selectors are exhausted do we inspect
+  // generic images. These remain candidates, but receive no reader bonus.
+  if(out.length<2)pushTags(allTags,false);
+
+  // URLs embedded in JS are a common Madara lazy/paged-reader fallback.
+  const directImageRe=/https?:\/\/[^"'\s<>\\]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^"'\s<>\\]*)?/gi;
   for(const m of html.matchAll(directImageRe)){
-    add(m[0]);
+    addImageCandidate(out,seen,m[0],"direct-reader-js",orderRef);
     if(out.length>=MAX_HTML_IMAGES)break;
   }
+
   return out.slice(0,MAX_HTML_IMAGES);
 }
+
+function imageFamily(url:string){
+  try{
+    const u=new URL(url),parts=u.pathname.split("/").filter(Boolean);
+    return parts.length>1?`${u.host}/${parts.slice(0,-1).join("/")}/`:u.host;
+  }catch{return url;}
+}
+
+async function inspectImageCandidates(candidates:ImageCandidate[],referer:string){
+  const results:InspectedImage[]=[];
+  let cursor=0;
+  const worker=async()=>{
+    while(true){
+      const index=cursor++;
+      if(index>=candidates.length)return;
+      const candidate=candidates[index];
+      try{
+        const r=await fetchSafe(candidate.url,false,{referer});
+        if(!r.contentType.startsWith("image/"))continue;
+        const m=await sharp(r.buffer,{failOn:"warning"}).metadata();
+        const width=m.width??0,height=m.height??0;
+        if(width<300||height<300)continue;
+        const ratio=height/Math.max(1,width);
+        const score=candidate.scoreHint
+          +(candidate.selectorHint?80:0)
+          +(ratio>=2.5?90:ratio>=1.8?55:ratio>=1.25?10:-70)
+          +(width>=600?20:0)
+          +(height>=1200?20:0)
+          +(r.buffer.byteLength>=50000?5:0);
+        results.push({...candidate,width,height,bytes:r.buffer.byteLength,format:m.format??null,score});
+      }catch{}
+    }
+  };
+  await Promise.all(Array.from({length:Math.min(8,candidates.length)},worker));
+  return results.sort((a,b)=>a.order-b.order);
+}
+
+function selectChapterImages(items:InspectedImage[]){
+  if(!items.length)return {selected:[] as InspectedImage[],version:"v4",reason:"no-valid-images"};
+
+  const strong=items.filter(x=>x.selectorHint);
+  // If the site explicitly identifies chapter images, trust that structure.
+  // Dimension filtering only removes obvious non-page placeholders.
+  let selected=strong.filter(x=>x.height/x.width>=1.15);
+  if(selected.length>=2){
+    return {selected:selected.sort((a,b)=>a.order-b.order),version:"v4",reason:"reader-selector",family:imageFamily(selected[0].url)};
+  }
+
+  // Fallback: find the dominant visual family of long images.
+  const long=items.filter(x=>x.height/x.width>=1.8&&x.score>=0);
+  const groups=new Map<string,InspectedImage[]>();
+  for(const x of long){
+    const key=imageFamily(x.url);
+    const list=groups.get(key)??[];list.push(x);groups.set(key,list);
+  }
+  const ranked=[...groups.values()].sort((a,b)=>b.length-a.length);
+  selected=ranked[0]??[];
+  if(selected.length<2){
+    const best=items.filter(x=>x.height/x.width>=1.8&&x.score>=0).sort((a,b)=>b.score-a.score);
+    selected=best.length?best:[];
+  }
+  return {selected:selected.sort((a,b)=>a.order-b.order),version:"v4",reason:"dominant-long-family",family:selected[0]?imageFamily(selected[0].url):null};
+}
+
 const actorPrefix=(s:{owner_id:string|null;anonymous_session_id:string|null})=>s.owner_id??s.anonymous_session_id??(()=>{throw new Error("Obra sem proprietário ou sessão anônima.")})();
 async function uploadPage(admin:any,series:any,chapter:any,buffer:Buffer,pageNumber:number){
   const meta=await sharp(buffer,{failOn:"warning"}).metadata();if(!meta.width||!meta.height)throw new Error(`Página ${pageNumber} inválida.`);
@@ -147,9 +296,74 @@ export async function ingestChapter(chapterId:string){
     const patch:Record<string,unknown>={source_canonical_url:await assertSafeUrl(chapter.source_url),source_metadata:detected};
     if(detected.chapterNumber!==null)patch.chapter_number=detected.chapterNumber;if(detected.chapterTitle)patch.title=detected.chapterTitle;
     const {error}=await admin.from("chapters").update(patch).eq("id",chapter.id);if(error)throw error;
-    const {buffer,url}=await fetchSafe(chapter.source_url,true),urls=imageUrls(buffer.toString("utf8"),url);if(!urls.length)throw new Error("Nenhuma imagem foi encontrada na URL. A fonte exige JavaScript ou um extrator específico.");
-    let total=0,count=0;for(const u of urls){const r=await fetchSafe(u);if(!r.contentType.startsWith("image/"))continue;const m=await sharp(r.buffer).metadata();if(!m.width||!m.height||m.width<200||m.height<200||m.width*m.height<150000)continue;total+=r.buffer.byteLength;if(total>MAX_HTML_TOTAL_BYTES)break;await uploadPage(admin,series,{...chapter,chapter_number:detected.chapterNumber??chapter.chapter_number},await sharp(r.buffer).png().toBuffer(),++count);}
-    if(!count)throw new Error("Nenhuma imagem de página válida foi baixada.");
+    let {buffer,url}=await fetchSafe(chapter.source_url,true);
+    let candidates=imageUrls(buffer.toString("utf8"),url);
+
+    // Madara's paged reader may intentionally render only page 1. Its
+    // ?style=list variant exposes the entire chapter without changing the
+    // canonical source URL stored in our database.
+    if(candidates.length<2){
+      try{
+        const listUrl=new URL(chapter.source_url);
+        listUrl.searchParams.set("style","list");
+        const listResponse=await fetchSafe(listUrl.toString(),true);
+        const listCandidates=imageUrls(listResponse.buffer.toString("utf8"),listResponse.url);
+        if(listCandidates.length>candidates.length){
+          buffer=listResponse.buffer;
+          url=listResponse.url;
+          candidates=listCandidates;
+        }
+      }catch{}
+    }
+
+    if(!candidates.length)throw new Error("Nenhuma imagem candidata foi encontrada na URL. A fonte exige JavaScript ou um extrator específico.");
+    const inspected=await inspectImageCandidates(candidates,url);
+    const selection=selectChapterImages(inspected);
+    if(!selection.selected.length)throw new Error("Nenhuma imagem de página do capítulo foi identificada.");
+    if(selection.selected.length===1){
+      const only=selection.selected[0];
+      throw new Error(`A detecção encontrou somente uma imagem ambígua (${only.width}x${only.height}); importação abortada para evitar logo/banner/capa.`);
+    }
+
+    const previousPages=await admin.from("pages").select("id,original_path").eq("chapter_id",chapter.id);
+    if(previousPages.error)throw previousPages.error;
+
+    // Reimport is destructive only to this chapter's previous pages. It never
+    // touches another chapter or another work.
+    if((previousPages.data??[]).length){
+      const ids=(previousPages.data??[]).map((p:any)=>p.id);
+      const paths=(previousPages.data??[]).map((p:any)=>p.original_path).filter(Boolean);
+      const {error:e1}=await admin.from("speech_bubbles").delete().in("page_id",ids);if(e1)throw e1;
+      const {error:e2}=await admin.from("page_analyses").delete().in("page_id",ids);if(e2)throw e2;
+      const {error:e3}=await admin.from("translation_jobs").delete().in("page_id",ids);if(e3)throw e3;
+      if(paths.length){const {error:e4}=await admin.storage.from("manga-pages").remove(paths);if(e4)throw e4;}
+      const {error:e5}=await admin.from("pages").delete().in("id",ids);if(e5)throw e5;
+    }
+
+    let total=0,count=0;
+    for(const item of selection.selected){
+      const r=await fetchSafe(item.url,false,{referer:url});
+      if(!r.contentType.startsWith("image/"))throw new Error(`A página selecionada não retornou imagem: ${item.url}`);
+      total+=r.buffer.byteLength;
+      if(total>MAX_HTML_TOTAL_BYTES)throw new Error("O conjunto de páginas excede o limite de tamanho configurado.");
+      await uploadPage(admin,series,{...chapter,chapter_number:detected.chapterNumber??chapter.chapter_number},await sharp(r.buffer).png().toBuffer(),++count);
+    }
+    if(count!==selection.selected.length)throw new Error(`A detecção selecionou ${selection.selected.length} páginas, mas somente ${count} foram baixadas.`);
+
+    await admin.from("chapters").update({
+      source_metadata:{
+        ...(detected as any),
+        image_detection:{
+          version:selection.version,
+          reason:selection.reason,
+          candidate_count:candidates.length,
+          inspected_count:inspected.length,
+          selected_page_count:selection.selected.length,
+          selected_family:selection.family??null,
+          source_variant:url===chapter.source_url?"canonical":"style=list",
+        },
+      },
+    }).eq("id",chapter.id);
   }else if(chapter.source_type==="pdf"){
     if(!chapter.source_path)throw new Error("PDF sem source_path.");
     const {data,error}=await admin.storage.from("manga-pages").download(chapter.source_path);if(error||!data)throw error||new Error("Falha ao baixar o PDF.");
