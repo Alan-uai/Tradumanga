@@ -13,7 +13,7 @@ export function canonicalizeSourceUrl(raw: string): string {
   }
   url.hostname = url.hostname.toLowerCase();
   if ((url.protocol === "https:" && url.port === "443") || (url.protocol === "http:" && url.port === "80")) url.port = "";
-  url.pathname = url.pathname.replace(/\\/{2,}/g, "/");
+  url.pathname = url.pathname.replace(/\/{2,}/g, "/");
   return url.toString();
 }
 
