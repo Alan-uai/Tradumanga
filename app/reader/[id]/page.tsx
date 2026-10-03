@@ -2,6 +2,7 @@ import Link from "next/link";
 import { assertSeriesAccess } from "@/lib/anonymous/access";
 import { createAdminClient } from "@/lib/supabase/admin";
 import ReaderProgressTracker from "@/components/reader-progress-tracker";
+import Immersive3D from "@/components/immersive-3d";
 
 export const dynamic = "force-dynamic";
 
@@ -59,6 +60,8 @@ export default async function Reader({
         </div>
         <div className="reader-status">{translatedReady ? "TRADUÇÃO PRONTA" : currentChapter?.status === "ready" ? "PRONTO" : "PROCESSANDO"}</div>
       </section>
+
+      <Immersive3D variant="reader" label={translatedReady ? "leitura · camada traduzida" : "leitura · preparando"} />
 
       <div className="reader-layout">
         <aside className="chapter-rail">
