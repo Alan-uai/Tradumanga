@@ -25,6 +25,7 @@ export type DetectedSourceMetadata = {
 export type RenderBubble = {
   polygon: unknown;
   bbox: unknown;
+  source_text: string | null;
   translated_text: string | null;
   style_json: Record<string, unknown> | null;
 };
@@ -483,7 +484,10 @@ async function safeMaskBuffer(mask:Buffer,w:number,h:number){
   return normalized;
 }
 async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAlign;font?:string;width:number;height:number}){
-  const build=(font?:string)=>sharp({text:{text:input.vertical?[...input.text.replace(/\s+/g,"")].join("\n"):input.text,font,width:input.width,height:input.height,align:input.align,rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
+  const lines=input.text.split(/\n+/).filter(Boolean);
+  const maxLine=Math.max(1,...lines.map(line=>line.length));
+  const fontSize=Math.max(10,Math.min(28,Math.floor(Math.min(input.height/Math.max(1,lines.length)*0.78,input.width/Math.max(1,Math.min(maxLine,18))*1.55))));
+  const build=(font?:string)=>sharp({text:{text:input.vertical?[...input.text.replace(/\s+/g,"")].join("\n"):input.text,font:font||("sans "+fontSize),width:input.width,height:input.height,align:input.align,rgba:true,wrap:"word-char",spacing:2}}).png().toBuffer();
   try{return await build(input.font||"sans");}catch(error){
     console.warn(JSON.stringify({event:"render_font_fallback",font:input.font,error:error instanceof Error?error.message:String(error)}));
     try{return await build();}catch(fallbackError){
@@ -495,22 +499,32 @@ async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAli
 export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[]){
   const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;if(!w||!h)throw new Error("Imagem original inválida.");
   const overlays:OverlayOptions[]=[],maskLayers:OverlayOptions[]=[];
-  for(const b of bubbles){const text=b.translated_text?.trim();if(!text)continue;
+  for(const b of bubbles){const text=b.translated_text?.trim(),source=b.source_text?.trim();if(!text)continue;
+    if(source&&source.localeCompare(text,undefined,{sensitivity:"base"})===0)continue;
     try{
+      const style=b.style_json??{};
+      const textType=String(style.text_type??"dialogue").toLowerCase();
+      if(["title","logo","watermark","credit"].includes(textType))continue;
       const g=geometry(b,w,h);
+      const areaRatio=(g.width*g.height)/(w*h),widthRatio=g.width/w,heightRatio=g.height/h;
+      if(areaRatio>0.06||widthRatio>0.88||heightRatio>0.14){
+        console.warn(JSON.stringify({event:"render_region_rejected",bbox:b.bbox,areaRatio,widthRatio,heightRatio,textType}));
+        continue;
+      }
       // Do not run median/rank on giant chapter images. Only process the
       // local bubble rectangle, and force every intermediate overlay to its
       // exact dimensions before compositing.
       const mask=await safeMaskBuffer(maskSvg(g.width,g.height,g.poly,g.x,g.y),g.width,g.height);
       const patch=await sharp(original)
         .extract({left:g.x,top:g.y,width:g.width,height:g.height})
+        .median(21)
         .ensureAlpha().png().toBuffer();
       const maskedPatch=await sharp(patch)
         .composite([{input:mask,blend:"dest-in",left:0,top:0}])
         .png().toBuffer();
       overlays.push({input:maskedPatch,left:g.x,top:g.y});
       maskLayers.push({input:mask,left:g.x,top:g.y});
-      const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
+      const vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
       const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
       const rendered=await renderTextLayer({text,vertical,align,font:typeof style.font==="string"?style.font:undefined,width:Math.max(1,g.width-12),height:Math.max(1,g.height-12)});
       if(!rendered)continue;
