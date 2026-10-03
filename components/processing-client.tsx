@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Immersive3D from "@/components/immersive-3d";
 
 type StatusPayload = {
   series?: { id: string; title: string };
@@ -70,6 +71,8 @@ export default function ProcessingClient({ seriesId, chapterId, title }: { serie
         <p className="processing-subtitle">
           {chapter ? `Capítulo ${chapter.chapterNumber > 0 ? chapter.chapterNumber : "identificando"} — processamento em andamento` : "Preparando capítulo…"}
         </p>
+
+        <Immersive3D variant="processing" progress={overall} label={chapter?.status === "ready" ? "pipeline · concluído" : "pipeline · processando"} />
 
         <section className="progress-card">
           {stages.map(([key, label]) => {
