@@ -382,12 +382,14 @@ export async function ingestChapter(chapterId:string){
     }
     let candidates=imageUrls(buffer.toString("utf8"),url);
 
-    // Madara's paged reader may intentionally render only page 1. Its
-    // ?style=list variant exposes the entire chapter without changing the
-    // canonical source URL stored in our database.
-    if(candidates.length<2){
-      try{
-        const listUrl=new URL(chapter.source_url);
+    // Madara's paged reader can expose only the first/last page in the
+    // initial HTML. The ?style=list variant is the authoritative static
+    // representation for the complete chapter and must be checked even when
+    // the paged HTML already yielded 2+ candidates.
+    try{
+      const sourceUrl=new URL(chapter.source_url);
+      if(sourceUrl.searchParams.get("style")!=="list"){
+        const listUrl=new URL(sourceUrl);
         listUrl.searchParams.set("style","list");
         const listResponse=await fetchSafe(listUrl.toString(),true);
         const listCandidates=imageUrls(listResponse.buffer.toString("utf8"),listResponse.url);
@@ -396,7 +398,12 @@ export async function ingestChapter(chapterId:string){
           url=listResponse.url;
           candidates=listCandidates;
         }
-      }catch{}
+      }
+    }catch(error){
+      console.warn(JSON.stringify({
+        event:"madara_list_variant_failed",
+        error:error instanceof Error?error.message:String(error),
+      }));
     }
 
     if(!candidates.length)throw new Error("Nenhuma imagem candidata foi encontrada na URL. A fonte exige JavaScript ou um extrator específico.");
