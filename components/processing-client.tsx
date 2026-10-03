@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type StatusPayload = {
+  series?: { id: string; title: string };
   chapter?: { id: string; chapterNumber: number; title: string | null; status: string; errorMessage: string | null; progress: Record<string, number | string> };
   pages?: Record<string, number>;
   totalPages?: number;
@@ -65,9 +66,9 @@ export default function ProcessingClient({ seriesId, title }: { seriesId: string
       <div className="processing-panel">
         <a className="back-link" href="/">← Biblioteca</a>
         <small className="eyebrow">TRADUÇÃO CONTEXTUAL</small>
-        <h1>{title}</h1>
+        <h1>{data?.series?.title ?? title}</h1>
         <p className="processing-subtitle">
-          {chapter ? `Capítulo ${chapter.chapterNumber} — processamento em andamento` : "Preparando capítulo…"}
+          {chapter ? `Capítulo ${chapter.chapterNumber > 0 ? chapter.chapterNumber : "identificando"} — processamento em andamento` : "Preparando capítulo…"}
         </p>
 
         <section className="progress-card">

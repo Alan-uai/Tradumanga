@@ -24,6 +24,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
 
     const progress = access.chapter.progress_json ?? {};
     return NextResponse.json({
+      series: { id: access.series.id, title: access.series.title },
       chapter: {
         id,
         chapterNumber: access.chapter.chapter_number,

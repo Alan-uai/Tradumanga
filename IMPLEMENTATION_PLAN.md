@@ -232,7 +232,7 @@ A execução pesada continua fora do request HTTP. O worker externo agora execut
 - [ ] reutilização de capítulos e imagens já importados
 - [x] versionamento dos artefatos
 
-Entradas reais implementadas: imagens, PDF e URL. URLs são validadas contra SSRF básico, baixadas diretamente quando são imagens/PDF e encaminhadas ao `gallery-dl` quando a página exige um extrator de galeria. PDF é rasterizado no worker com `pdftoppm`.
+Entradas reais implementadas: imagens, PDF e URL. URLs são validadas contra SSRF básico. No modo automático, o worker tenta identificar título/capítulo com metadata do `gallery-dl`, usa metadata HTML como fallback e baixa as páginas com `gallery-dl`; se o extrator não conseguir processar a URL, o worker tenta extrair as imagens da própria página HTML. PDF é rasterizado no worker com `pdftoppm`.
 
 Para fontes externas, o downloader/worker deve ficar separado do runtime web.
 

@@ -162,7 +162,42 @@ async function processChapter(job: Job) {
       await supabase.from("chapters").update({ source_sha256: copied.sourceHash }).eq("id", chapter.id);
     } else if (chapter.source_type === "url") {
       const prepared = await prepareChapterSource({ chapterId: chapter.id, sourceType: "url", sourceUrl: chapter.source_url });
-      for (let i = 0; i < prepared.imageFiles.length; i++) hashes.push(await uploadImportedPage(chapter, series, prepared.imageFiles[i], i + 1));
+      const detectedTitle = prepared.metadata.title?.trim() || null;
+      const detectedChapter = prepared.metadata.chapterNumber;
+      const detectedChapterTitle = prepared.metadata.chapterTitle?.trim() || null;
+      const detectedLanguage = prepared.metadata.sourceLanguage;
+
+      if (detectedTitle) {
+        const { error: seriesUpdateError } = await supabase.from("manga_series").update({
+          title: detectedTitle,
+          status: "processing",
+          ...(detectedLanguage ? { source_language: detectedLanguage } : {}),
+        }).eq("id", series.id);
+        if (seriesUpdateError) throw seriesUpdateError;
+      }
+      const chapterUpdate: Record<string, unknown> = {
+        source_canonical_url: prepared.sourceUrl,
+        source_metadata: {
+          detection_method: prepared.metadata.detectionMethod,
+          extractor: prepared.metadata.extractor,
+          title: detectedTitle,
+          chapter_number: detectedChapter,
+          chapter_title: detectedChapterTitle,
+          source_language: detectedLanguage,
+        },
+      };
+      if (detectedChapter !== null) chapterUpdate.chapter_number = detectedChapter;
+      if (detectedChapterTitle) chapterUpdate.title = detectedChapterTitle;
+      const { error: chapterUpdateError } = await supabase.from("chapters").update(chapterUpdate).eq("id", chapter.id);
+      if (chapterUpdateError) throw chapterUpdateError;
+
+      const pathChapter = detectedChapter ?? chapter.chapter_number;
+      for (let i = 0; i < prepared.imageFiles.length; i++) hashes.push(await uploadImportedPage(
+        { ...chapter, chapter_number: pathChapter },
+        series,
+        prepared.imageFiles[i],
+        i + 1,
+      ));
       const sourceHash = prepared.sourceHash ?? sha256(Buffer.from(hashes.join("|")));
       await supabase.from("chapters").update({
         source_sha256: sourceHash, source_canonical_url: prepared.sourceUrl,
