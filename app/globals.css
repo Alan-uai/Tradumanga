@@ -215,7 +215,9 @@ input:focus{transform:translateZ(4px)}
 .import-panel:hover,.card:hover,.progress-card:hover,.context-card:hover,.features article:hover,.work:hover{transform:translateY(-3px);box-shadow:0 22px 60px rgba(0,0,0,.22);border-color:#383841}
 .reader-page{transition:transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .35s}
 .reader-page:hover{transform:perspective(1200px) rotateX(.4deg) translateY(-2px);box-shadow:0 24px 70px rgba(0,0,0,.28)}
-@keyframes motionCube{0%,100%{rotate:0 1 0 0}50%{rotate:1 1 0 0}}
+.shell,.import-screen,.processing-screen,.reader-shell{animation:pageEnter .65s cubic-bezier(.2,.8,.2,1) both}
+@keyframes pageEnter{from{opacity:0;transform:translateY(10px) scale(.995)}to{opacity:1;transform:none}}
+@keyframes motionCube{0%,100%{transform:translate3d(calc(-50% + var(--mx)),calc(-50% + var(--my)),80px) rotateX(-16deg) rotateY(25deg) rotateZ(0deg)}50%{transform:translate3d(calc(-50% + var(--mx)),calc(-50% + var(--my)),105px) rotateX(8deg) rotateY(205deg) rotateZ(4deg)}}
 @keyframes motionOrbit{to{transform:translate(-50%,-50%) rotateX(68deg) rotateZ(360deg) translate3d(var(--mx),var(--my),0)}}
 @keyframes motionGrid{to{background-position:0 42px,42px 0}}
 @keyframes motionScan{0%,100%{transform:translateY(-90px);opacity:.2}50%{transform:translateY(90px);opacity:1}}
