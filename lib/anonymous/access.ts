@@ -32,7 +32,7 @@ export async function assertChapterAccess(chapterId: string) {
   const admin = createAdminClient();
   const { data: chapter, error } = await admin
     .from("chapters")
-    .select("id,series_id,chapter_number,title,status,error_message,progress_json,manga_series!inner(id,owner_id,anonymous_session_id)")
+    .select("id,series_id,chapter_number,title,status,error_message,progress_json,manga_series!inner(id,owner_id,anonymous_session_id,title)")
     .eq("id", chapterId)
     .maybeSingle();
 
@@ -43,7 +43,10 @@ export async function assertChapterAccess(chapterId: string) {
   if (!actor) return null;
 
   const series = chapter.manga_series as unknown as {
-    id: string; owner_id: string | null; anonymous_session_id: string | null;
+    id: string;
+    owner_id: string | null;
+    anonymous_session_id: string | null;
+    title: string;
   };
   const allowed = actor.userId
     ? series.owner_id === actor.userId
