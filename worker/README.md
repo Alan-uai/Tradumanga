@@ -25,7 +25,6 @@ GEMINI_API_KEY=
 ## Variáveis recomendadas
 
 ```env
-GEMINI_MODEL=gemini-2.5-flash
 WORKER_ID=tradumanga-worker
 JOB_LEASE_SECONDS=1800
 JOB_HEARTBEAT_MS=60000
