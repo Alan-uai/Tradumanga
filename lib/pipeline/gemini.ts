@@ -343,7 +343,7 @@ export async function editPageWithNanoBanana2(input: {
     ],
     response_format: {
       type: "image",
-      mime_type: "image/png",
+      mime_type: "image/jpeg",
       image_size: "2K",
     },
   };
