@@ -2,7 +2,6 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 
 export default function New() {
   const [title, setTitle] = useState("");
@@ -15,39 +14,20 @@ export default function New() {
     setCreating(true);
     setErrorMessage("");
 
-    const supabase = createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const response = await fetch("/api/works", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    const payload = await response.json().catch(() => null);
 
-    if (!user) {
-      router.push("/login");
+    if (!response.ok) {
+      setErrorMessage(payload?.error ?? "Não foi possível criar a obra.");
+      setCreating(false);
       return;
     }
 
-    const slug = title
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-
-    const { data, error } = await supabase
-      .from("manga_series")
-      .insert({
-        owner_id: user.id,
-        title,
-        slug,
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      setErrorMessage(error.message);
-      setCreating(false);
-    } else {
-      router.push("/reader/" + data.id);
-    }
+    router.push("/upload/" + payload.work.id);
   }
 
   return (
@@ -55,14 +35,11 @@ export default function New() {
       <div className="card">
         <small>NOVA OBRA</small>
         <h1>Começar uma tradução</h1>
+        <p>A tradução pode ser iniciada sem criar uma conta.</p>
         <form onSubmit={go}>
           <label>
             Título
-            <input
-              required
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
+            <input required value={title} onChange={(e) => setTitle(e.target.value)} />
           </label>
           <button className="button primary" disabled={creating}>
             {creating ? "Criando…" : "Criar obra"}
