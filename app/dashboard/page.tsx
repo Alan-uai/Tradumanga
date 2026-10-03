@@ -3,7 +3,7 @@ import {createClient} from "@/lib/supabase/server";
 import Immersive3D from "@/components/immersive-3d";
 
 export default async function Dashboard(){
-  const s=createClient();
+  const s=await createClient();
   const{data:{user}}=await s.auth.getUser();
   const{data:works}=user?await s.from("manga_series").select("id,title,status").order("created_at",{ascending:false}):{data:[]};
   return <main className="shell">
