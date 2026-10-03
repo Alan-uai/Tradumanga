@@ -286,3 +286,110 @@ ${JSON.stringify(input.bubbles)}`;
     config: { responseMimeType: "application/json" },
   });
 }
+
+
+export type GeminiImageEdit = {
+  translated_text: string;
+  source_text?: string | null;
+  bubble_index: number;
+  bbox?: unknown;
+};
+
+export async function editPageWithNanoBanana2(input: {
+  image: Buffer;
+  mimeType: string;
+  width: number;
+  height: number;
+  edits: GeminiImageEdit[];
+}): Promise<Buffer> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY não configurada");
+
+  const edits = input.edits.filter((item) => item.translated_text.trim());
+  const prompt = [
+    "Você é o editor visual do Tradumanga usando Nano Banana 2.",
+    "Edite a página de mangá/manhwa fornecida.",
+    "",
+    "OBJETIVO:",
+    "Substituir somente os textos das regiões de fala/narração indicadas pelas traduções fornecidas.",
+    "Remova completamente o texto original dessas regiões antes de inserir o português.",
+    "Use português brasileiro natural e exatamente o texto de tradução fornecido.",
+    "",
+    "PRESERVAÇÃO OBRIGATÓRIA:",
+    "- Preserve personagens, rostos, cabelo, roupas, cenários, linhas, painéis, cores, iluminação e composição.",
+    "- Não redesenhe a página.",
+    "- Não altere elementos que não sejam os textos indicados.",
+    "- Não traduza logos, marcas d'água, créditos, URLs ou publicidade.",
+    "- Não adicione texto novo.",
+    "- Não corte, estique ou mude a proporção da página.",
+    "- Mantenha a resolução e o enquadramento da imagem de entrada tanto quanto a API permitir.",
+    "- O texto inserido deve parecer naturalmente integrado ao balão/caixa original, respeitando orientação, tamanho e estilo visual.",
+    "",
+    "REGIÕES E TRADUÇÕES:",
+    JSON.stringify(edits),
+    "",
+    "IMPORTANTE: as coordenadas são referências para localizar as regiões; use também a própria imagem para identificar visualmente os balões.",
+  ].join("\n");
+
+  const body = {
+    model: "gemini-3.1-flash-image",
+    input: [
+      {
+        type: "image",
+        mime_type: input.mimeType || "image/png",
+        data: input.image.toString("base64"),
+      },
+      { type: "text", text: prompt },
+    ],
+    response_format: {
+      type: "image",
+      mime_type: "image/png",
+      aspect_ratio: imageAspectRatio(input.width, input.height),
+      image_size: "2K",
+    },
+  };
+
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": key,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180000),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Nano Banana 2 HTTP ${response.status}: ${detail.slice(0, 1200)}`);
+  }
+
+  const result = await response.json() as {
+    output_image?: { data?: string | null };
+    output?: Array<{ type?: string; data?: string; mime_type?: string }>;
+  };
+
+  const encoded = result.output_image?.data
+    ?? result.output?.find((item) => item.type === "image" && item.data)?.data;
+
+  if (!encoded) throw new Error("Nano Banana 2 não retornou uma imagem.");
+  return Buffer.from(encoded, "base64");
+}
+
+function imageAspectRatio(width: number, height: number): string {
+  const ratio = width / Math.max(1, height);
+  const choices: Array<[string, number]> = [
+    ["1:8", 1 / 8],
+    ["1:4", 1 / 4],
+    ["2:3", 2 / 3],
+    ["3:4", 3 / 4],
+    ["1:1", 1],
+    ["4:3", 4 / 3],
+    ["3:2", 3 / 2],
+    ["4:1", 4],
+    ["8:1", 8],
+  ];
+  return choices.reduce((best, current) =>
+    Math.abs(current[1] - ratio) < Math.abs(best[1] - ratio) ? current : best
+  )[0];
+}
