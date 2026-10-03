@@ -20,6 +20,10 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const workerId = process.env.WORKER_ID || `worker-${process.pid}-${Date.now()}`;
 const TMP_ROOT = process.env.WORKER_TMP_DIR || "/tmp/tradumanga";
+const JOB_LEASE_SECONDS = Math.min(3600, Math.max(30, Number(process.env.JOB_LEASE_SECONDS || 1800)));
+const JOB_HEARTBEAT_MS = Math.min(300_000, Math.max(10_000, Number(process.env.JOB_HEARTBEAT_MS || 60_000)));
+const POLL_INTERVAL_MS = Math.min(30_000, Math.max(500, Number(process.env.WORKER_POLL_INTERVAL_MS || 2000)));
+let shuttingDown = false;
 
 if (!supabaseUrl || !serviceRoleKey) throw new Error("NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórios para o worker");
 
@@ -30,7 +34,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function claimJob(): Promise<Job | null> {
-  const { data, error } = await supabase.rpc("claim_translation_job", { p_worker_id: workerId, p_lease_seconds: 600 });
+  const { data, error } = await supabase.rpc("claim_translation_job", { p_worker_id: workerId, p_lease_seconds: JOB_LEASE_SECONDS });
   if (error) throw error;
   return Array.isArray(data) && data.length ? (data[0] as Job) : null;
 }
@@ -47,6 +51,41 @@ async function failJob(job: Job, message: string) {
     p_job_id: job.id, p_worker_id: workerId, p_error_message: message, p_output_json: {},
   });
   if (error) throw error;
+}
+
+function startLeaseHeartbeat(job: Job) {
+  let stopped = false;
+  const beat = async () => {
+    if (stopped || shuttingDown) return;
+    try {
+      const { data, error } = await supabase.rpc("heartbeat_translation_job", {
+        p_job_id: job.id,
+        p_worker_id: workerId,
+        p_lease_seconds: JOB_LEASE_SECONDS,
+      });
+      if (error) throw error;
+      if (data !== true) {
+        console.error(JSON.stringify({
+          event: "job_lease_lost",
+          worker_id: workerId,
+          job_id: job.id,
+        }));
+      }
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "job_heartbeat_failed",
+        worker_id: workerId,
+        job_id: job.id,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
+
+  const timer = setInterval(() => void beat(), JOB_HEARTBEAT_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 async function enqueue(jobType: "analyze_page" | "translate_page" | "render_page", pageId: string) {
@@ -431,21 +470,89 @@ async function processJob(job: Job) {
 }
 
 async function run() {
-  console.log(`Tradumanga worker iniciado: ${workerId}`);
-  while (true) {
-    const job = await claimJob();
-    if (!job) { await sleep(2000); continue; }
-    console.log(JSON.stringify({ event:"job_claimed", worker_id:workerId, job_id:job.id, job_type:job.job_type, page_id:job.page_id, chapter_id:job.chapter_id, attempt:job.attempts }));
+  console.log(JSON.stringify({
+    event: "worker_started",
+    worker_id: workerId,
+    lease_seconds: JOB_LEASE_SECONDS,
+    heartbeat_ms: JOB_HEARTBEAT_MS,
+    poll_interval_ms: POLL_INTERVAL_MS,
+  }));
+
+  while (!shuttingDown) {
+    let job: Job | null = null;
+    try {
+      job = await claimJob();
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "claim_failed",
+        worker_id: workerId,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (!job) {
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    console.log(JSON.stringify({
+      event: "job_claimed",
+      worker_id: workerId,
+      job_id: job.id,
+      job_type: job.job_type,
+      page_id: job.page_id,
+      chapter_id: job.chapter_id,
+      attempt: job.attempts,
+    }));
+
+    const stopHeartbeat = startLeaseHeartbeat(job);
     try {
       await processJob(job);
       await completeJob(job, { worker_id: workerId, pipeline_version: "v2" });
-      console.log(JSON.stringify({ event:"job_completed", worker_id:workerId, job_id:job.id }));
+      console.log(JSON.stringify({ event: "job_completed", worker_id: workerId, job_id: job.id }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown worker error";
-      console.error(JSON.stringify({ event:"job_failed", worker_id:workerId, job_id:job.id, error:message }));
-      try { await failJob(job, message); } catch (failError) { console.error(failError); }
+      console.error(JSON.stringify({
+        event: "job_failed",
+        worker_id: workerId,
+        job_id: job.id,
+        error: message,
+      }));
+      try {
+        await failJob(job, message);
+      } catch (failError) {
+        console.error(JSON.stringify({
+          event: "job_fail_update_failed",
+          worker_id: workerId,
+          job_id: job.id,
+          error: failError instanceof Error ? failError.message : String(failError),
+        }));
+      }
+    } finally {
+      stopHeartbeat();
     }
   }
+
+  console.log(JSON.stringify({ event: "worker_stopped", worker_id: workerId }));
 }
 
-run().catch((error) => { console.error(error); process.exit(1); });
+process.once("SIGTERM", () => {
+  shuttingDown = true;
+  console.log(JSON.stringify({ event: "shutdown_requested", worker_id: workerId, signal: "SIGTERM" }));
+});
+
+process.once("SIGINT", () => {
+  shuttingDown = true;
+  console.log(JSON.stringify({ event: "shutdown_requested", worker_id: workerId, signal: "SIGINT" }));
+});
+
+run().catch((error) => {
+  console.error(JSON.stringify({
+    event: "worker_fatal",
+    worker_id: workerId,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  process.exit(1);
+});
