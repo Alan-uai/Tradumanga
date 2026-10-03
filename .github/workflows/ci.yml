@@ -14,5 +14,3 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run build
-      - name: Build worker image
-        run: docker build -f worker/Dockerfile -t tradumanga-worker:ci .
