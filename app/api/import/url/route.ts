@@ -34,7 +34,13 @@ export async function POST(req: Request) {
       return actor.userId ? series.owner_id === actor.userId : series.anonymous_session_id === actor.anonymousSessionId;
     });
     if (existing) {
-      const series = existing.manga_series;
+      const series = existing.manga_series as unknown as {
+        id: string;
+        title: string;
+        owner_id: string | null;
+        anonymous_session_id: string | null;
+        status: string;
+      };
       return NextResponse.json({ reused: true, seriesId: series.id, chapterId: existing.id, title: series.title, chapterNumber: existing.chapter_number, status: existing.status });
     }
 
