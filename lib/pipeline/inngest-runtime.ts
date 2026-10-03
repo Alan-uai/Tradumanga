@@ -202,7 +202,7 @@ function imageUrls(html:string,base:string){
   // URLs embedded in JS are a common Madara lazy/paged-reader fallback.
   const directImageRe=/https?:\/\/[^"'\s<>\\]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^"'\s<>\\]*)?/gi;
   for(const m of html.matchAll(directImageRe)){
-    addImageCandidate(out,seen,m[0],"direct-reader-js",orderRef);
+    addImageCandidate(out,seen,m[0],base,"direct-reader-js",orderRef);
     if(out.length>=MAX_HTML_IMAGES)break;
   }
 
