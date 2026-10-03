@@ -344,7 +344,6 @@ export async function editPageWithNanoBanana2(input: {
     response_format: {
       type: "image",
       mime_type: "image/png",
-      aspect_ratio: imageAspectRatio(input.width, input.height),
       image_size: "2K",
     },
   };
@@ -376,20 +375,3 @@ export async function editPageWithNanoBanana2(input: {
   return Buffer.from(encoded, "base64");
 }
 
-function imageAspectRatio(width: number, height: number): string {
-  const ratio = width / Math.max(1, height);
-  const choices: Array<[string, number]> = [
-    ["1:8", 1 / 8],
-    ["1:4", 1 / 4],
-    ["2:3", 2 / 3],
-    ["3:4", 3 / 4],
-    ["1:1", 1],
-    ["4:3", 4 / 3],
-    ["3:2", 3 / 2],
-    ["4:1", 4],
-    ["8:1", 8],
-  ];
-  return choices.reduce((best, current) =>
-    Math.abs(current[1] - ratio) < Math.abs(best[1] - ratio) ? current : best
-  )[0];
-}
