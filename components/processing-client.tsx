@@ -20,7 +20,7 @@ const stages = [
   ["qa", "QA"],
 ] as const;
 
-export default function ProcessingClient({ seriesId, title }: { seriesId: string; title: string }) {
+export default function ProcessingClient({ seriesId, chapterId, title }: { seriesId: string; chapterId: string; title: string }) {
   const router = useRouter();
   const [data, setData] = useState<StatusPayload | null>(null);
   const [error, setError] = useState("");
@@ -30,7 +30,7 @@ export default function ProcessingClient({ seriesId, title }: { seriesId: string
     let timer: ReturnType<typeof setTimeout> | null = null;
     const poll = async () => {
       try {
-        const response = await fetch(`/api/chapters/${seriesId}/status`, { cache: "no-store" });
+        const response = await fetch(`/api/chapters/${chapterId}/status`, { cache: "no-store" });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.error ?? "Falha ao consultar o processamento.");
         if (stopped) return;
@@ -50,7 +50,7 @@ export default function ProcessingClient({ seriesId, title }: { seriesId: string
     };
     void poll();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }, [router, seriesId]);
+  }, [chapterId, router, seriesId]);
 
   const chapter = data?.chapter;
   const progress = chapter?.progress ?? {};
