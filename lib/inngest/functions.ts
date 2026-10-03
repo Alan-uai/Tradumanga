@@ -168,6 +168,7 @@ export const translatePage = inngest.createFunction(
     id: "tradumanga-translate-page",
     triggers: { event: "tradumanga/page.translate" },
     concurrency: LIMIT,
+    singleton: { key: "event.data.pageId", mode: "skip" },
     retries: 3,
     onFailure: async ({ event, error }) => {
       const admin = createAdminClient();
