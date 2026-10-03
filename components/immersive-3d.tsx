@@ -69,7 +69,7 @@ export default function Immersive3D({
       <div className="motion-3d__scanner" />
       <div className="motion-3d__particles">
         {Array.from({ length: 18 }, (_, index) => (
-          <i key={index} style={{ "--i": index } as React.CSSProperties} />
+          <i key={index} style={{ "--i": index, left: (50 + Math.cos((index / 18) * Math.PI * 2) * 38) + "%", top: (50 + Math.sin((index / 18) * Math.PI * 2) * 38) + "%", animationDelay: (index * -0.17) + "s" } as React.CSSProperties} />
         ))}
       </div>
       {label && <span className="motion-3d__label">{label}</span>}
