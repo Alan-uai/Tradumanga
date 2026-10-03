@@ -24,7 +24,7 @@ export async function GET(
 
     const requested = new URL(_req.url).searchParams.get("type") === "logo" ? "logo" : "banner";
     const path = requested === "logo"
-      ? series.logo_path ?? series.cover_path ?? series.banner_path
+      ? series.logo_path
       : series.banner_path ?? series.cover_path ?? series.logo_path;
 
     if (!path) return NextResponse.json({ error: "Asset indisponível." }, { status: 404 });
