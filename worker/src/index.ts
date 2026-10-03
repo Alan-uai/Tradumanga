@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import {
   analyzePageWithGemini,
   buildChapterContext,
@@ -304,7 +304,7 @@ async function processTranslation(job: Job) {
   const { data: page, error: pageError } = await supabase
     .from("pages")
     .select(
-      "id, chapter_id, chapters(title, context_json, manga_series(source_language, target_language))",
+      "id, chapter_id, chapters(title, context_json, manga_series(id, source_language, target_language))",
     )
     .eq("id", job.page_id)
     .single();
@@ -313,14 +313,16 @@ async function processTranslation(job: Job) {
 
   const chapter = page.chapters as unknown as {
     context_json: Record<string, unknown>;
-    manga_series: { source_language: string; target_language: string };
+    manga_series: {
+      id: string;
+      source_language: string;
+      target_language: string;
+    };
   };
 
   const { data: bubbles, error: bubblesError } = await supabase
     .from("speech_bubbles")
-    .select(
-      "bubble_index, source_text, style_json",
-    )
+    .select("bubble_index, source_text, style_json")
     .eq("page_id", page.id)
     .order("bubble_index");
 
@@ -329,14 +331,7 @@ async function processTranslation(job: Job) {
   const { data: glossary, error: glossaryError } = await supabase
     .from("glossary_terms")
     .select("source_term, preferred_translation, notes")
-    .eq(
-      "series_id",
-      (
-        page.chapters as unknown as {
-          manga_series: { id?: string };
-        }
-      ).manga_series.id ?? "",
-    );
+    .eq("series_id", chapter.manga_series.id);
 
   if (glossaryError) throw glossaryError;
 
