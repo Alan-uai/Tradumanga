@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as dns } from "node:dns";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readdir, stat, rm, writeFile, readFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import net from "node:net";
 import sharp from "sharp";
@@ -135,13 +135,6 @@ export async function prepareChapterSource(input: {
       return { workDir, imageFiles: [], sourceHash: null, sourceUrl: null, sourceFile: null };
     }
 
-    if (input.sourceType === "pdf") {
-      if (!input.sourcePath) throw new Error("Capítulo PDF sem source_path.");
-      sourceFile = path.join(workDir, "source.pdf");
-      const bytes = await readFile(path.join("/tmp", "missing"));
-      void bytes;
-    }
-
     if (input.sourceType === "url") {
       if (!sourceUrl) throw new Error("Capítulo URL sem source_url.");
       const direct = await fetchRemote(sourceUrl, workDir);
@@ -156,11 +149,6 @@ export async function prepareChapterSource(input: {
         await rm(sourceFile, { force: true });
         imageFiles = await downloadWithGalleryDl(sourceUrl, workDir);
       }
-    }
-
-    if (input.sourceType === "pdf") {
-      // The worker copies the private Storage PDF into workDir before this function is used.
-      imageFiles = await convertPdf(sourceFile!, workDir);
     }
 
     if (!imageFiles.length) {
