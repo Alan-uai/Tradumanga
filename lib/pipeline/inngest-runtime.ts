@@ -168,19 +168,56 @@ function geometry(b:RenderBubble,w:number,h:number){
   const x0=Number(bb.x??0),y0=Number(bb.y??0),bw=Number(bb.width??0),bh=Number(bb.height??0),x=Math.max(0,Math.floor(x0<=1?x0*w:x0)),y=Math.max(0,Math.floor(y0<=1?y0*h:y0)),r=Math.min(w-1,Math.ceil(x+(bw<=1?bw*w:bw))),bt=Math.min(h-1,Math.ceil(y+(bh<=1?bh*h:bh)));return{x,y,width:Math.max(1,r-x+1),height:Math.max(1,bt-y+1),poly:[{x,y},{x:r,y},{x:r,y:bt},{x,y:bt}]};
 }
 function maskSvg(w:number,h:number,poly:{x:number;y:number}[],ox:number,oy:number){const d=poly.map((p,i)=>`${i?"L":"M"}${(p.x-ox).toFixed(1)},${(p.y-oy).toFixed(1)}`).join(" ")+" Z";return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><path d="${d}" fill="white"/></svg>`);}
+function medianKernel(w:number,h:number){const k=Math.min(5,w,h);if(k<3)return 0;return k%2===1?k:k-1;}
+async function fitLayer(buf:Buffer,w:number,h:number){
+  const m=await sharp(buf).metadata(),iw=m.width??0,ih=m.height??0;
+  if(!iw||!ih)throw new Error("Camada de imagem inválida.");
+  if(iw===w&&ih===h)return{buf,w,h};
+  const resized=await sharp(buf).resize({width:w,height:h,fit:"inside",withoutEnlargement:true}).png().toBuffer();
+  const m2=await sharp(resized).metadata(),rw=m2.width??0,rh=m2.height??0;
+  if(!rw||!rh)throw new Error("Camada de imagem inválida.");
+  if(rw===w&&rh===h)return{buf:resized,w,h};
+  const padded=await sharp(resized).ensureAlpha().extend({top:0,left:0,bottom:h-rh,right:w-rw,background:{r:0,g:0,b:0,alpha:0}}).png().toBuffer();
+  return{buf:padded,w,h};
+}
+async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAlign;font?:string;width:number;height:number}){
+  const build=(font?:string)=>sharp({text:{text:input.vertical?[...input.text.replace(/\s+/g,"")].join("\n"):input.text,font,width:input.width,height:input.height,align:input.align,rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
+  try{return await build(input.font||"sans");}catch(error){
+    console.warn(JSON.stringify({event:"render_font_fallback",font:input.font,error:error instanceof Error?error.message:String(error)}));
+    try{return await build();}catch(fallbackError){
+      console.warn(JSON.stringify({event:"render_text_failed",error:fallbackError instanceof Error?fallbackError.message:String(fallbackError)}));
+      return null;
+    }
+  }
+}
 export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[]){
   const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;if(!w||!h)throw new Error("Imagem original inválida.");
   const overlays:OverlayOptions[]=[],maskLayers:OverlayOptions[]=[];
-  for(const b of bubbles){const text=b.translated_text?.trim();if(!text)continue;const g=geometry(b,w,h),mask=maskSvg(g.width,g.height,g.poly,g.x,g.y);
-    const patch=await sharp(original).extract({left:g.x,top:g.y,width:g.width,height:g.height}).median(5).png().toBuffer();
-    overlays.push({input:await sharp(patch).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
-    const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
-    const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
-    const textLayer=await sharp({text:{text:vertical?[...text.replace(/\s+/g,"")].join("\n"):text,font:String(style.font??"sans"),width:Math.max(1,g.width-12),height:Math.max(1,g.height-12),align,rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
-    overlays.push({input:await sharp(textLayer).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x+6,top:g.y+6});maskLayers.push({input:mask,left:g.x,top:g.y});
+  for(const b of bubbles){const text=b.translated_text?.trim();if(!text)continue;
+    try{
+      const g=geometry(b,w,h),mask=maskSvg(g.width,g.height,g.poly,g.x,g.y);
+      const kernel=medianKernel(g.width,g.height);
+      let patchPipeline=sharp(original).extract({left:g.x,top:g.y,width:g.width,height:g.height});
+      if(kernel)patchPipeline=patchPipeline.median(kernel);
+      const patch=await patchPipeline.png().toBuffer();
+      overlays.push({input:await sharp(patch).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
+      maskLayers.push({input:mask,left:g.x,top:g.y});
+      const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
+      const alignRaw=String(style.align??"center").toLowerCase(),align:TextAlign=alignRaw==="left"||alignRaw==="right"||alignRaw==="centre"?alignRaw:"center";
+      const rendered=await renderTextLayer({text,vertical,align,font:typeof style.font==="string"?style.font:undefined,width:Math.max(1,g.width-12),height:Math.max(1,g.height-12)});
+      if(!rendered)continue;
+      const layer=await fitLayer(rendered,g.width,g.height);
+      const canvas=await sharp({create:{width:g.width,height:g.height,channels:4,background:{r:0,g:0,b:0,alpha:0}}})
+        .composite([{input:layer.buf,left:Math.max(0,Math.min(6,g.width-layer.w)),top:Math.max(0,Math.min(6,g.height-layer.h))}]).png().toBuffer();
+      overlays.push({input:await sharp(canvas).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
+    }catch(error){
+      console.warn(JSON.stringify({event:"render_bubble_skipped",bbox:b.bbox,error:error instanceof Error?error.message:String(error)}));
+    }
   }
-  const translated=await sharp(original).composite(overlays).png().toBuffer();
-  const mask=await sharp({create:{width:w,height:h,channels:4,background:{r:255,g:255,b:255,alpha:0}}}).composite(maskLayers).greyscale().png().toBuffer();
+  const translated=overlays.length?await sharp(original).composite(overlays).png().toBuffer():await sharp(original).png().toBuffer();
+  let maskPipeline=sharp({create:{width:w,height:h,channels:4,background:{r:255,g:255,b:255,alpha:0}}});
+  if(maskLayers.length)maskPipeline=maskPipeline.composite(maskLayers);
+  const mask=await maskPipeline.greyscale().png().toBuffer();
   const qa=await verifyPixelIntegrity(original,translated,mask);return{translated,mask,qa};
 }
 export async function verifyPixelIntegrity(original:Buffer,translated:Buffer,mask:Buffer){

@@ -34,39 +34,93 @@ function getErrorMessage(error: unknown) {
   try { return JSON.stringify(error); } catch { return String(error); }
 }
 
+const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RETRYABLE_MESSAGE = /(unavailable|resource[_ ]exhausted|overloaded|rate limit|too many requests|internal (?:server )?error|temporarily unavailable|try again later|quota exceeded)/i;
+const NETWORK_MESSAGE = /(econnreset|econnrefused|etimedout|eai_again|socket hang up|network error|fetch failed|aborted)/i;
+
+export function isRetryableGeminiError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (typeof status === "number" && RETRYABLE_STATUS_CODES.has(status)) return true;
+  if (typeof status === "string") {
+    const numeric = Number(status);
+    if (Number.isFinite(numeric) && RETRYABLE_STATUS_CODES.has(numeric)) return true;
+    if (RETRYABLE_MESSAGE.test(status)) return true;
+  }
+  const message = getErrorMessage(error);
+  if (/"code"\s*:\s*(\d+)/.test(message)) {
+    const code = Number(message.match(/"code"\s*:\s*(\d+)/)?.[1]);
+    if (RETRYABLE_STATUS_CODES.has(code)) return true;
+  }
+  return RETRYABLE_MESSAGE.test(message) || NETWORK_MESSAGE.test(message);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const MAX_ATTEMPTS_PER_MODEL = 2;
+const BASE_DELAY_MS = 600;
+const MAX_DELAY_MS = 4000;
+
+function backoffDelay(attempt: number) {
+  const backoff = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
+  return backoff + Math.floor(Math.random() * 300);
+}
+
 async function generateJson(
   operation: string,
   request: Omit<Parameters<GoogleGenAI["models"]["generateContent"]>[0], "model">,
 ): Promise<GeminiJson> {
   const ai = getClient();
   let lastError: unknown = null;
+  let lastRetryable = false;
 
   for (const model of GEMINI_MODEL_FALLBACKS) {
-    try {
-      const result = await ai.models.generateContent({ ...request, model });
-      const text = result.text || "{}";
-      const parsed = parseJson(text);
+    for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt++) {
+      try {
+        const result = await ai.models.generateContent({ ...request, model });
+        const parsed = parseJson(result.text || "{}");
 
-      console.info(JSON.stringify({
-        event: "gemini_success",
-        operation,
-        model,
-      }));
+        console.info(JSON.stringify({
+          event: "gemini_success",
+          operation,
+          model,
+          attempt,
+        }));
 
-      return parsed;
-    } catch (error) {
-      lastError = error;
-      console.warn(JSON.stringify({
-        event: "gemini_model_failed",
-        operation,
-        model,
-        error: getErrorMessage(error),
-      }));
+        return parsed;
+      } catch (error) {
+        lastError = error;
+        const invalidJson = error instanceof SyntaxError;
+        const retryable = invalidJson ? false : isRetryableGeminiError(error);
+        lastRetryable = retryable;
+        const finalAttempt = attempt >= MAX_ATTEMPTS_PER_MODEL - 1;
+
+        console.warn(JSON.stringify({
+          event: "gemini_model_failed",
+          operation,
+          model,
+          attempt,
+          kind: invalidJson ? "invalid_json" : "api",
+          retryable,
+          error: getErrorMessage(error),
+        }));
+
+        if (!retryable || finalAttempt) break;
+        const delayMs = backoffDelay(attempt);
+        console.warn(JSON.stringify({ event: "gemini_retrying", operation, model, attempt: attempt + 1, delayMs }));
+        await sleep(delayMs);
+      }
     }
   }
 
+  console.error(JSON.stringify({
+    event: "gemini_exhausted",
+    operation,
+    retryable: lastRetryable,
+    error: getErrorMessage(lastError),
+  }));
+
   throw new Error(
-    `Gemini indisponível após tentar todos os modelos (${GEMINI_MODEL_FALLBACKS.join(", ")}). Último erro: ${getErrorMessage(lastError)}`,
+    `Gemini indisponível após tentar todos os modelos (${GEMINI_MODEL_FALLBACKS.join(", ")}). ${lastRetryable ? "Erro transitório: " : "Último erro: "}${getErrorMessage(lastError)}`,
   );
 }
 
