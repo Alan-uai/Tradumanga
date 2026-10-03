@@ -108,15 +108,15 @@ function imageUrls(html:string,base:string){
       if(!seen.has(u)&&/^https?:$/i.test(new URL(u).protocol)){seen.add(u);out.push(u);}
     }catch{}
   };
-  const imgTagRe=new RegExp("<img\\\\b[^>]*>","gi");
-  const attrRe=new RegExp("(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=[\\\"']([^\\\"']+)[\\\"']","gi");
+  const imgTagRe=new RegExp("<img\\b[^>]*>","gi");
+  const attrRe=new RegExp("(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=["']([^"']+)["']","gi");
   for(const tag of html.match(imgTagRe)??[]){
     for(const m of tag.matchAll(attrRe)){
-      add(m[1].split(",")[0].trim().split(/\\s+/)[0]);
+      add(m[1].split(",")[0].trim().split(/\s+/)[0]);
     }
     if(out.length>=MAX_HTML_IMAGES)break;
   }
-  const directImageRe=new RegExp("https?:\\\\/\\\\/[^\\\"'\\s<>]+\\\\.(?:jpe?g|png|webp)(?:\\\\?[^\\\"'\\s<>]*)?","gi");
+  const directImageRe=new RegExp("https?:\\/\\/[^"'\\s<>]+\\.(?:jpe?g|png|webp)(?:\\?[^"'\\s<>]*)?","gi");
   for(const m of html.matchAll(directImageRe)){
     add(m[0]);
     if(out.length>=MAX_HTML_IMAGES)break;
