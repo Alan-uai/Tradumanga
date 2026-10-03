@@ -13,40 +13,35 @@ export default function New() {
     e.preventDefault();
     setCreating(true);
     setErrorMessage("");
-
     const response = await fetch("/api/works", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
     });
     const payload = await response.json().catch(() => null);
-
     if (!response.ok) {
       setErrorMessage(payload?.error ?? "Não foi possível criar a obra.");
       setCreating(false);
       return;
     }
-
     router.push("/upload/" + payload.work.id);
   }
 
   return (
-    <main className="auth">
-      <div className="card">
-        <small>NOVA OBRA</small>
-        <h1>Começar uma tradução</h1>
-        <p>A tradução pode ser iniciada sem criar uma conta.</p>
+    <main className="import-screen">
+      <section className="import-panel compact">
+        <small className="eyebrow">NOVA OBRA</small>
+        <h1>Traduzir um manga ou manhwa.</h1>
+        <p>Não precisa preparar o capítulo. Depois de criar a obra, você escolhe imagem, PDF ou URL e o pipeline faz o restante.</p>
         <form onSubmit={go}>
-          <label>
-            Título
-            <input required value={title} onChange={(e) => setTitle(e.target.value)} />
+          <label className="field">
+            <span>Nome da obra</span>
+            <input required autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Ex.: The Return of the Scorned Genius" />
           </label>
-          <button className="button primary" disabled={creating}>
-            {creating ? "Criando…" : "Criar obra"}
-          </button>
+          <button className="button primary large" disabled={creating}>{creating ? "Criando…" : "Continuar para a fonte"}</button>
         </form>
         {errorMessage && <p className="err">{errorMessage}</p>}
-      </div>
+      </section>
     </main>
   );
 }
