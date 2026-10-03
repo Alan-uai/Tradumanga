@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { saveAnonymousWork } from "@/lib/anonymous/localState";
+import Immersive3D from "@/components/immersive-3d";
 
 type NewMode = "automatic" | "manual";
 
@@ -70,6 +71,8 @@ export default function New() {
           </div>
           <span className="anon-badge">Sem login</span>
         </div>
+
+        <Immersive3D variant="input" label={mode === "automatic" ? "entrada · URL → visão" : "entrada · manual"} />
 
         <div className="source-tabs" role="tablist">
           <button type="button" className={mode === "automatic" ? "source-tab active" : "source-tab"} onClick={() => { setMode("automatic"); setErrorMessage(""); }}>
