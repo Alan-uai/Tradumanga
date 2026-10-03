@@ -66,7 +66,7 @@ async function fetchSafe(raw: string, html=false) {
   }
   throw new Error("Redirecionamentos demais.");
 }
-const clean=(v: unknown)=>typeof v==="string"?v.replace(/<[^>]+>/g," ").replace(/\\s+/g," ").trim()||null:null;
+const clean=(v: unknown)=>typeof v==="string"?v.replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim()||null:null;
 const decode=(v:string)=>v.replace(/&amp;/gi,"&").replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&lt;/gi,"<").replace(/&gt;/gi,">");
 function meta(html:string,key:string){
   const k=key.replace(/[.*+?^()|[\\]\\\\]/g,"\\\\$&");
@@ -75,12 +75,12 @@ function meta(html:string,key:string){
   return clean(html.match(a)?.[1]||html.match(b)?.[1]||"");
 }
 function chapterNo(...values:unknown[]){
-  const p=[/(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)[\\s._:#-]*(\\d+(?:[.,]\\d+)?)/i,/[\\/_-](\\d+(?:[.,]\\d+)?)(?:\\D*)$/i];
+  const p=[/(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)[\s._:#-]*(\d+(?:[.,]\d+)?)/i,/[/_-](\d+(?:[.,]\d+)?)(?:\D*)$/i];
   for(const v of values){ if(typeof v==="number"&&Number.isFinite(v)) return v; if(typeof v!=="string") continue;
     for(const r of p){const m=v.match(r);if(m){const n=Number(m[1].replace(",","."));if(Number.isFinite(n)&&n>=0&&n<100000)return n;}}
   } return null;
 }
-const strip=(v:string|null)=>v?v.replace(/\\s*[-|–—:]?\\s*(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)\\s*[#.: -]*\\d+(?:[.,]\\d+)?(?:\\s*[-|–—:]\\s*.*)?$/i,"").trim()||null:null;
+const strip=(v:string|null)=>v?v.replace(/\s*[-|–—:]?\s*(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)\s*[#.: -]*\d+(?:[.,]\d+)?(?:\s*[-|–—:]\s*.*)?$/i,"").trim()||null:null;
 function language(v:unknown){
   if(typeof v!=="string")return null; const x=v.toLowerCase().trim();
   const m:Record<string,string>={japanese:"ja",japonês:"ja",ja:"ja",korean:"ko",coreano:"ko",ko:"ko",chinese:"zh",chinês:"zh",zh:"zh",english:"en",inglês:"en",en:"en",spanish:"es",espanhol:"es",es:"es",portuguese:"pt-BR",português:"pt-BR","pt-br":"pt-BR",pt:"pt-BR"};
@@ -109,14 +109,14 @@ function imageUrls(html:string,base:string){
     }catch{}
   };
   const imgTagRe=new RegExp("<img\\b[^>]*>","gi");
-  const attrRe=new RegExp("(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=["']([^"']+)["']","gi");
+  const attrRe=/(?:data-src|data-original|data-lazy-src|data-url|src|data-srcset)=["']([^"']+)["']/gi;
   for(const tag of html.match(imgTagRe)??[]){
     for(const m of tag.matchAll(attrRe)){
       add(m[1].split(",")[0].trim().split(/\s+/)[0]);
     }
     if(out.length>=MAX_HTML_IMAGES)break;
   }
-  const directImageRe=new RegExp("https?:\\/\\/[^"'\\s<>]+\\.(?:jpe?g|png|webp)(?:\\?[^"'\\s<>]*)?","gi");
+  const directImageRe=/https?:\/\/[^"'\s<>]+\.(?:jpe?g|png|webp)(?:\?[^"'\s<>]*)?/gi;
   for(const m of html.matchAll(directImageRe)){
     add(m[0]);
     if(out.length>=MAX_HTML_IMAGES)break;
@@ -175,7 +175,7 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
     const patch=await sharp(original).extract({left:g.x,top:g.y,width:g.width,height:g.height}).median(5).png().toBuffer();
     overlays.push({input:await sharp(patch).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x,top:g.y});
     const style=b.style_json??{},vertical=String(style.orientation??"horizontal").toLowerCase()==="vertical";
-    const textLayer=await sharp({text:{text:vertical?[...text.replace(/\\s+/g,"")].join("\\n"):text,font:String(style.font??"sans"),width:Math.max(1,g.width-12),height:Math.max(1,g.height-12),align:String(style.align??"center"),rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
+    const textLayer=await sharp({text:{text:vertical?[...text.replace(/\s+/g,"")].join("\n"):text,font:String(style.font??"sans"),width:Math.max(1,g.width-12),height:Math.max(1,g.height-12),align:String(style.align??"center"),rgba:true,wrap:"word-char",spacing:4}}).png().toBuffer();
     overlays.push({input:await sharp(textLayer).composite([{input:mask,blend:"dest-in"}]).png().toBuffer(),left:g.x+6,top:g.y+6});maskLayers.push({input:mask,left:g.x,top:g.y});
   }
   const translated=await sharp(original).composite(overlays).png().toBuffer();
