@@ -1,2 +1,156 @@
-import {NextResponse} from "next/server"; import {GoogleGenAI} from "@google/genai"; import {createClient} from "@/lib/supabase/server";
-export async function POST(req:Request){try{const body=await req.json();const{pageId,imageBase64,mimeType,storyContext="",glossary=""}=body;if(!pageId||!imageBase64)return NextResponse.json({error:"pageId e imageBase64 são obrigatórios"},{status:400});const supabase=await createClient();const{data:{user}}=await supabase.auth.getUser();if(!user)return NextResponse.json({error:"Não autenticado"},{status:401});const{data:page}=await supabase.from("pages").select("id,chapter_id").eq("id",pageId).single();if(!page)return NextResponse.json({error:"Página não encontrada"},{status:404});const{data:chapter}=await supabase.from("chapters").select("series_id").eq("id",page.chapter_id).single();const{data:series}=chapter?await supabase.from("manga_series").select("owner_id,target_language").eq("id",chapter.series_id).single():{data:null};if(!series||series.owner_id!==user.id)return NextResponse.json({error:"Acesso negado"},{status:403});const key=process.env.GEMINI_API_KEY;if(!key)return NextResponse.json({error:"GEMINI_API_KEY não configurada"},{status:503});const ai=new GoogleGenAI({apiKey:key});const prompt=`Você é o motor de análise contextual do Tradumanga. Analise esta página de mangá/manhwa antes de traduzir. Entenda a cena, relações entre personagens, tom, intenção, onomatopeias e continuidade. Produza SOMENTE JSON válido com: story_context, visual_context, bubbles (array com bubble_index, polygon, bbox, source_text, translated_text, translation_notes, confidence, style_json), warnings. Traduza para pt-BR natural, preservando intenção e contexto. Não invente texto que não esteja visível. Contexto anterior: ${storyContext}. Glossário: ${glossary}.`;const result=await ai.models.generateContent({model:process.env.GEMINI_MODEL||"gemini-2.5-flash",contents:[{role:"user",parts:[{text:prompt},{inlineData:{mimeType:mimeType||"image/jpeg",data:imageBase64.replace(/^data:[^,]+,/,"")}}]}],config:{responseMimeType:"application/json"}});const raw=result.text||"{}";const parsed=JSON.parse(raw);const{data:analysis,error}=await supabase.from("page_analyses").insert({page_id:pageId,model:process.env.GEMINI_MODEL||"gemini-2.5-flash",model_version:null,source_language:"ja",target_language:series.target_language,story_context:parsed.story_context||null,visual_context:parsed.visual_context||null,ocr_text:(parsed.bubbles||[]).map((b:any)=>b.source_text||"").filter(Boolean).join("\n"),analysis_json:parsed}).select("id").single();if(error)throw error;for(const b of parsed.bubbles||[]){await supabase.from("speech_bubbles").upsert({page_id:pageId,bubble_index:b.bubble_index,polygon:b.polygon||[],bbox:b.bbox||null,source_text:b.source_text||null,translated_text:b.translated_text||null,translation_notes:b.translation_notes||null,confidence:b.confidence??null,style_json:b.style_json||{}},{onConflict:"page_id,bubble_index"});}await supabase.from("pages").update({status:"ready"}).eq("id",pageId);return NextResponse.json({analysisId:analysis.id,result:parsed});}catch(e:any){return NextResponse.json({error:e?.message||"Falha na análise"},{status:500})}}
+import { NextResponse } from "next/server";
+import { analyzePageWithGemini } from "@/lib/pipeline/gemini";
+import { createClient } from "@/lib/supabase/server";
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+    const {
+      pageId,
+      imageBase64,
+      mimeType = "image/jpeg",
+    } = body;
+
+    if (!pageId || !imageBase64) {
+      return NextResponse.json(
+        { error: "pageId e imageBase64 são obrigatórios" },
+        { status: 400 },
+      );
+    }
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Não autenticado" }, { status: 401 });
+    }
+
+    const { data: page } = await supabase
+      .from("pages")
+      .select("id, chapter_id")
+      .eq("id", pageId)
+      .single();
+
+    if (!page) {
+      return NextResponse.json({ error: "Página não encontrada" }, { status: 404 });
+    }
+
+    const { data: chapter } = await supabase
+      .from("chapters")
+      .select("series_id")
+      .eq("id", page.chapter_id)
+      .single();
+
+    const { data: series } = chapter
+      ? await supabase
+          .from("manga_series")
+          .select("owner_id, source_language, target_language")
+          .eq("id", chapter.series_id)
+          .single()
+      : { data: null };
+
+    if (!series || series.owner_id !== user.id) {
+      return NextResponse.json({ error: "Acesso negado" }, { status: 403 });
+    }
+
+    const parsed = await analyzePageWithGemini({
+      imageBase64,
+      mimeType,
+    });
+
+    const bubbles = Array.isArray(parsed.bubbles) ? parsed.bubbles : [];
+
+    const { data: analysis, error } = await supabase
+      .from("page_analyses")
+      .insert({
+        page_id: pageId,
+        model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        model_version: null,
+        source_language: series.source_language,
+        target_language: series.target_language,
+        story_context:
+          typeof parsed.story_context === "string"
+            ? parsed.story_context
+            : null,
+        visual_context:
+          typeof parsed.visual_context === "string"
+            ? parsed.visual_context
+            : null,
+        ocr_text: bubbles
+          .map((bubble) =>
+            typeof bubble === "object" &&
+            bubble !== null &&
+            "source_text" in bubble &&
+            typeof bubble.source_text === "string"
+              ? bubble.source_text
+              : "",
+          )
+          .filter(Boolean)
+          .join("\n"),
+        analysis_json: parsed,
+      })
+      .select("id")
+      .single();
+
+    if (error) throw error;
+
+    for (const bubble of bubbles) {
+      if (!bubble || typeof bubble !== "object") continue;
+
+      const item = bubble as Record<string, unknown>;
+      const bubbleIndex =
+        typeof item.bubble_index === "number" ? item.bubble_index : null;
+
+      if (bubbleIndex === null) continue;
+
+      await supabase.from("speech_bubbles").upsert(
+        {
+          page_id: pageId,
+          bubble_index: bubbleIndex,
+          polygon: Array.isArray(item.polygon) ? item.polygon : [],
+          bbox:
+            item.bbox && typeof item.bbox === "object" ? item.bbox : null,
+          source_text:
+            typeof item.source_text === "string" ? item.source_text : null,
+          translated_text: null,
+          translation_notes: null,
+          confidence:
+            typeof item.confidence === "number" ? item.confidence : null,
+          style_json: {
+            ...(item.style_json &&
+            typeof item.style_json === "object"
+              ? item.style_json
+              : {}),
+            intent:
+              typeof item.intent === "string" ? item.intent : null,
+            speaker_hint:
+              typeof item.speaker_hint === "string"
+                ? item.speaker_hint
+                : null,
+          },
+        },
+        { onConflict: "page_id,bubble_index" },
+      );
+    }
+
+    await supabase
+      .from("pages")
+      .update({ status: "analyzed", error_message: null })
+      .eq("id", pageId);
+
+    return NextResponse.json({
+      analysisId: analysis.id,
+      result: parsed,
+      translated: false,
+    });
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error: error instanceof Error ? error.message : "Falha na análise",
+      },
+      { status: 500 },
+    );
+  }
+}
