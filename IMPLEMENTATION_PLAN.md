@@ -188,10 +188,10 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 - [x] Schema inicial
 - [x] Aplicação Next.js
 - [x] Autenticação disponível
-- [ ] tradução sem login como fluxo principal
-- [ ] sessão anônima segura
-- [ ] persistência local de obras traduzidas/lidas e progresso
-- [ ] migração automática do estado anônimo após login
+- [x] tradução sem login como fluxo principal
+- [x] sessão anônima segura
+- [x] persistência local de obras traduzidas/lidas e progresso
+- [x] migração automática do estado anônimo após login
 - [x] Dashboard
 - [x] Criação de obra
 - [x] Upload de capítulo/páginas
@@ -203,10 +203,10 @@ A máscara deve ser derivada da análise dos balões/regiões de texto, nunca de
 - [x] fila de jobs transacionais
 - [x] claim atômico com SKIP LOCKED
 - [x] retry/recovery de jobs
-- [ ] processamento por página
+- [x] processamento por página
 - [x] criação/idempotência do job de processamento por capítulo
 - [x] idempotência
-- [ ] observabilidade de status e erros
+- [x] observabilidade de status e erros no fluxo do capítulo
 
 Implementado nesta fase:
 
@@ -220,34 +220,36 @@ Implementado nesta fase:
 - endpoint Next.js `POST /api/jobs/enqueue`;
 - upload de capítulo agora cria/enfileira o job `process_chapter`.
 
-A execução pesada continua fora do request HTTP. O worker externo ainda será implementado.
+A execução pesada continua fora do request HTTP. O worker externo agora executa ingestão, análise, contexto, tradução, renderização e QA.
 
 ### Fase C — Ingestão e cache
 
-- [ ] canonicalização de URLs
-- [ ] identificação de site/fonte
-- [ ] download de originais
-- [ ] SHA-256
+- [x] canonicalização de URLs
+- [x] identificação do tipo de fonte
+- [x] download de originais
+- [x] SHA-256
 - [ ] deduplicação por URL/hash
 - [ ] reutilização de capítulos e imagens já importados
-- [ ] versionamento dos artefatos
+- [x] versionamento dos artefatos
+
+Entradas reais implementadas: imagens, PDF e URL. URLs são validadas contra SSRF básico. No modo automático, o worker tenta identificar título/capítulo com metadata do `gallery-dl`, usa metadata HTML como fallback e baixa as páginas com `gallery-dl`; se o extrator não conseguir processar a URL, o worker tenta extrair as imagens da própria página HTML. PDF é rasterizado no worker com `pdftoppm`.
 
 Para fontes externas, o downloader/worker deve ficar separado do runtime web.
 
 ### Fase D — Visão e OCR contextual
 
-- [ ] análise multimodal da página
-- [ ] identificação de balões e caixas
-- [ ] bounding boxes/polígonos
-- [ ] OCR
-- [ ] idioma de origem
-- [ ] direção de leitura
-- [ ] onomatopeias
-- [ ] texto vertical/horizontal
-- [ ] estilo aproximado
-- [ ] confiança
-- [ ] contexto visual
-- [ ] contexto narrativo
+- [x] análise multimodal da página
+- [x] identificação de balões e caixas
+- [x] bounding boxes/polígonos
+- [x] OCR
+- [x] idioma de origem
+- [x] direção de leitura
+- [x] onomatopeias
+- [x] texto vertical/horizontal
+- [x] estilo aproximado
+- [x] confiança
+- [x] contexto visual
+- [x] contexto narrativo
 
 ### Fase E — Context Engine
 
@@ -266,15 +268,15 @@ O contexto não deve autorizar invenção de texto que não esteja presente.
 
 ### Fase F — Tradução contextual
 
-- [ ] tradução para pt-BR
-- [ ] preservação de intenção
-- [ ] adequação de registro
-- [ ] naturalidade de diálogo
-- [ ] consistência de nomes/termos
-- [ ] glossário
-- [ ] notas de tradução
-- [ ] confidence
-- [ ] versionamento
+- [x] tradução para pt-BR
+- [x] preservação de intenção
+- [x] adequação de registro
+- [x] naturalidade de diálogo
+- [x] consistência de nomes/termos
+- [x] glossário
+- [x] notas de tradução
+- [x] confidence
+- [x] versionamento
 - [ ] revisão humana
 
 ### Fase G — Renderer
@@ -312,10 +314,10 @@ Validações:
 
 ### Fase I — Leitor e biblioteca do usuário
 
-- [ ] seleção de capítulo
-- [ ] navegação página a página
-- [ ] modo original/traduzido
-- [ ] indicador de processamento
+- [x] seleção de capítulo
+- [x] navegação página a página
+- [x] modo original/traduzido
+- [x] indicador de processamento
 - [ ] revisão de tradução
 - [ ] edição de balões
 - [ ] regeneração de uma página
@@ -373,6 +375,26 @@ Exemplos:
 
 ## 9. Estado atual
 
+### Implementação do fluxo completo de tradução
+
+A branch atual implementa o caminho real, sem mock de processamento:
+
+`entrada → criação de capítulo → ingestão → páginas originais → análise Gemini → Context Engine → tradução contextual → máscara → renderer determinístico → QA de pixels → Storage → Reader`.
+
+Entradas aceitas pela UI:
+
+- imagens múltiplas;
+- PDF;
+- URL de capítulo/volume.
+
+O worker externo é responsável pelas operações pesadas. O renderer usa uma máscara derivada das regiões analisadas e verifica programaticamente que nenhuma diferença ocorreu fora dessa máscara. A página traduzida é sempre armazenada em artefato separado de `original_path`.
+
+UI/UX: o Figma existente foi usado como referência de tokens e componentes, e uma tela editável `00 — Import` foi adicionada ao arquivo `Tradumanga — UI/UX`. A implementação web recebeu os estados correspondentes de importação, processamento e leitura.
+
+Pendências para declarar a fase operacionalmente concluída: executar CI/build, construir e executar o Docker worker com credenciais reais, testar um capítulo real ponta a ponta, validar os artefatos renderizados visualmente, concluir deduplicação/reuso e fechar a revisão humana no Reader.
+
+
+
 Base implementada:
 
 - GitHub: Alan-uai/Tradumanga
@@ -388,9 +410,7 @@ O commit anterior, `6a3fa3157e51d1ed119bc5b1359f5b516c015a76`, foi confirmado co
 
 Próxima etapa:
 
-**Fase B — Worker externo + processamento por página**, começando pelo consumidor da fila e pelo dispatcher de `process_chapter`.
-
-A autenticação/persistência anônima deve ser implementada antes de fechar a experiência de tradução no Reader, mas não deve bloquear o worker: o pipeline de tradução deve continuar independente de conta autenticada.
+**Validação operacional do pipeline completo**, seguida de deduplicação/reuso de fontes, revisão humana no Reader e observabilidade/escala. O worker e a experiência sem login já estão implementados na branch atual.
 
 ## 10. Critério de conclusão
 

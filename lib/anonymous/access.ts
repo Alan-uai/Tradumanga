@@ -32,7 +32,7 @@ export async function assertChapterAccess(chapterId: string) {
   const admin = createAdminClient();
   const { data: chapter, error } = await admin
     .from("chapters")
-    .select("id,series_id,chapter_number,title,status,manga_series!inner(id,owner_id,anonymous_session_id)")
+    .select("id,series_id,chapter_number,title,status,error_message,progress_json,manga_series!inner(id,owner_id,anonymous_session_id)")
     .eq("id", chapterId)
     .maybeSingle();
 

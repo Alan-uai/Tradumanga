@@ -1,9 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
-import {
-  analyzePageWithGemini,
-  buildChapterContext,
-  translatePageWithGemini,
-} from "../../lib/pipeline/gemini";
+import { analyzePageWithGemini, buildChapterContext, translatePageWithGemini } from "../../lib/pipeline/gemini";
+import { prepareChapterSource, copyPrivateSourceToWorkDir, convertPdfSource, sha256 } from "./ingest";
+import { renderPage } from "./renderer";
+import { verifyPixelIntegrity } from "./qa";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import sharp from "sharp";
 
 type Job = {
   id: string;
@@ -16,14 +18,10 @@ type Job = {
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const workerId =
-  process.env.WORKER_ID || `worker-${process.pid}-${Date.now()}`;
+const workerId = process.env.WORKER_ID || `worker-${process.pid}-${Date.now()}`;
+const TMP_ROOT = process.env.WORKER_TMP_DIR || "/tmp/tradumanga";
 
-if (!supabaseUrl || !serviceRoleKey) {
-  throw new Error(
-    "NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórios para o worker",
-  );
-}
+if (!supabaseUrl || !serviceRoleKey) throw new Error("NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY são obrigatórios para o worker");
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -32,443 +30,422 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function claimJob(): Promise<Job | null> {
-  const { data, error } = await supabase.rpc("claim_translation_job", {
-    p_worker_id: workerId,
-    p_lease_seconds: 300,
-  });
-
+  const { data, error } = await supabase.rpc("claim_translation_job", { p_worker_id: workerId, p_lease_seconds: 600 });
   if (error) throw error;
-
-  return Array.isArray(data) && data.length > 0 ? (data[0] as Job) : null;
+  return Array.isArray(data) && data.length ? (data[0] as Job) : null;
 }
 
 async function completeJob(job: Job, output: Record<string, unknown> = {}) {
   const { error } = await supabase.rpc("complete_translation_job", {
-    p_job_id: job.id,
-    p_worker_id: workerId,
-    p_output_json: output,
+    p_job_id: job.id, p_worker_id: workerId, p_output_json: output,
   });
-
   if (error) throw error;
 }
 
-async function failJob(job: Job, errorMessage: string) {
+async function failJob(job: Job, message: string) {
   const { error } = await supabase.rpc("fail_translation_job", {
-    p_job_id: job.id,
-    p_worker_id: workerId,
-    p_error_message: errorMessage,
-    p_output_json: {},
+    p_job_id: job.id, p_worker_id: workerId, p_error_message: message, p_output_json: {},
   });
-
   if (error) throw error;
 }
 
-async function enqueue(
-  jobType: "analyze_page" | "translate_page",
-  pageId: string,
-) {
+async function enqueue(jobType: "analyze_page" | "translate_page" | "render_page", pageId: string) {
   const { error } = await supabase.rpc("enqueue_translation_job", {
-    p_job_type: jobType,
-    p_page_id: pageId,
-    p_input_json: { pipeline_version: "v1" },
-    p_force: false,
+    p_job_type: jobType, p_page_id: pageId, p_input_json: { pipeline_version: "v2" }, p_force: false,
   });
-
   if (error) throw error;
+}
+
+async function updateChapterProgress(chapterId: string) {
+  const [{ data: pages, error: pageError }, { data: chapter, error: chapterError }] = await Promise.all([
+    supabase.from("pages").select("status").eq("chapter_id", chapterId),
+    supabase.from("chapters").select("context_updated_at").eq("id", chapterId).single(),
+  ]);
+  if (pageError) throw pageError;
+  if (chapterError) throw chapterError;
+
+  const list = pages ?? [];
+  const total = Math.max(1, list.length);
+  const done = (states: string[]) => list.filter((p) => states.includes(p.status)).length;
+  const download = list.length ? 100 : 0;
+  const analysis = Math.round(done(["analyzed","translating","translated","rendering","ready"]) / total * 100);
+  const context = chapter?.context_updated_at ? 100 : 0;
+  const translation = Math.round(done(["translated","rendering","ready"]) / total * 100);
+  const render = Math.round(done(["rendering","ready"]) / total * 100);
+  const qa = Math.round(done(["ready"]) / total * 100);
+  const overall = Math.round(download * .15 + analysis * .20 + context * .15 + translation * .20 + render * .20 + qa * .10);
+
+  const { error } = await supabase.from("chapters").update({
+    progress_json: { download, analysis, context, translation, render, qa, overall, contextReady: context },
+  }).eq("id", chapterId);
+  if (error) throw error;
+}
+
+async function failChapter(chapterId: string, message: string) {
+  await supabase.from("chapters").update({
+    status: "error", error_message: message, progress_json: { error: message },
+  }).eq("id", chapterId);
+}
+
+function actorPrefix(series: { owner_id: string | null; anonymous_session_id: string | null }) {
+  const prefix = series.owner_id ?? series.anonymous_session_id;
+  if (!prefix) throw new Error("Obra sem proprietário ou sessão anônima.");
+  return prefix;
+}
+
+async function uploadImportedPage(chapter: any, series: any, filePath: string, pageNumber: number) {
+  const buffer = await readFile(filePath);
+  const metadata = await sharp(buffer, { failOn: "warning" }).metadata();
+  if (!metadata.width || !metadata.height) throw new Error(`Página ${pageNumber} inválida.`);
+
+  const ext = path.extname(filePath).toLowerCase();
+  const safeExt = [".jpg",".jpeg",".png",".webp",".gif",".bmp",".tif",".tiff"].includes(ext) ? ext : ".png";
+  const contentType = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : `image/${safeExt.slice(1).replace("jpg","jpeg")}`;
+  const storagePath = `${actorPrefix(series)}/${series.id}/${chapter.chapter_number}/pages/${String(pageNumber).padStart(4,"0")}${safeExt}`;
+
+  const { error: uploadError } = await supabase.storage.from("manga-pages").upload(storagePath, buffer, { contentType, upsert: true });
+  if (uploadError) throw uploadError;
+
+  const { data: page, error } = await supabase.from("pages").upsert({
+    chapter_id: chapter.id, page_number: pageNumber, original_path: storagePath,
+    translated_path: null, width: metadata.width, height: metadata.height,
+    original_sha256: sha256(buffer), authorized_mask_path: null, render_version: null,
+    status: "queued", error_message: null,
+  }, { onConflict: "chapter_id,page_number" }).select("id,page_number,original_path").single();
+  if (error || !page) throw error || new Error("Falha ao registrar página.");
+  return sha256(buffer);
 }
 
 async function processChapter(job: Job) {
   if (!job.chapter_id) throw new Error("process_chapter sem chapter_id");
+  const { data: chapter, error: chapterError } = await supabase.from("chapters")
+    .select("id,series_id,chapter_number,source_type,source_url,source_path,source_sha256").eq("id", job.chapter_id).single();
+  if (chapterError || !chapter) throw chapterError || new Error("Capítulo não encontrado.");
 
-  const { data: pages, error } = await supabase
-    .from("pages")
-    .select("id, page_number, status")
-    .eq("chapter_id", job.chapter_id)
-    .order("page_number");
+  const { data: series, error: seriesError } = await supabase.from("manga_series")
+    .select("id,owner_id,anonymous_session_id").eq("id", chapter.series_id).single();
+  if (seriesError || !series) throw seriesError || new Error("Obra não encontrada.");
 
-  if (error) throw error;
-  if (!pages?.length) throw new Error("Capítulo sem páginas");
+  const workDir = path.join(TMP_ROOT, `chapter-${chapter.id}-${Date.now()}`);
+  await mkdir(workDir, { recursive: true });
 
-  for (const page of pages) {
-    await enqueue("analyze_page", page.id);
+  try {
+    const hashes: string[] = [];
+
+    if (chapter.source_type === "images") {
+      const { data: pages, error } = await supabase.from("pages").select("id,page_number,original_path")
+        .eq("chapter_id", chapter.id).order("page_number");
+      if (error) throw error;
+      if (!pages?.length) throw new Error("Capítulo sem imagens.");
+      for (const page of pages) {
+        const { data: file, error: downloadError } = await supabase.storage.from("manga-pages").download(page.original_path);
+        if (downloadError || !file) throw downloadError || new Error(`Falha ao baixar página ${page.page_number}.`);
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const meta = await sharp(buffer, { failOn: "warning" }).metadata();
+        if (!meta.width || !meta.height) throw new Error(`Página ${page.page_number} inválida.`);
+        const hash = sha256(buffer);
+        hashes.push(hash);
+        const { error: updateError } = await supabase.from("pages").update({
+          original_sha256: hash, width: meta.width, height: meta.height, status: "queued", error_message: null,
+        }).eq("id", page.id);
+        if (updateError) throw updateError;
+      }
+    } else if (chapter.source_type === "pdf") {
+      if (!chapter.source_path) throw new Error("PDF sem source_path.");
+      const copied = await copyPrivateSourceToWorkDir(chapter.source_path, workDir, async () => {
+        const { data, error } = await supabase.storage.from("manga-pages").download(chapter.source_path);
+        if (error || !data) throw error || new Error("Falha ao baixar o PDF.");
+        return data;
+      });
+      const files = await convertPdfSource(copied.sourceFile, workDir);
+      for (let i = 0; i < files.length; i++) hashes.push(await uploadImportedPage(chapter, series, files[i], i + 1));
+      await supabase.from("chapters").update({ source_sha256: copied.sourceHash }).eq("id", chapter.id);
+    } else if (chapter.source_type === "url") {
+      const prepared = await prepareChapterSource({ chapterId: chapter.id, sourceType: "url", sourceUrl: chapter.source_url });
+      const detectedTitle = prepared.metadata.title?.trim() || null;
+      const detectedChapter = prepared.metadata.chapterNumber;
+      const detectedChapterTitle = prepared.metadata.chapterTitle?.trim() || null;
+      const detectedLanguage = prepared.metadata.sourceLanguage;
+
+      if (detectedTitle) {
+        const { error: seriesUpdateError } = await supabase.from("manga_series").update({
+          title: detectedTitle,
+          status: "processing",
+          ...(detectedLanguage ? { source_language: detectedLanguage } : {}),
+        }).eq("id", series.id);
+        if (seriesUpdateError) throw seriesUpdateError;
+      }
+      const chapterUpdate: Record<string, unknown> = {
+        source_canonical_url: prepared.sourceUrl,
+        source_metadata: {
+          detection_method: prepared.metadata.detectionMethod,
+          extractor: prepared.metadata.extractor,
+          title: detectedTitle,
+          chapter_number: detectedChapter,
+          chapter_title: detectedChapterTitle,
+          source_language: detectedLanguage,
+        },
+      };
+      if (detectedChapter !== null) chapterUpdate.chapter_number = detectedChapter;
+      if (detectedChapterTitle) chapterUpdate.title = detectedChapterTitle;
+      const { error: chapterUpdateError } = await supabase.from("chapters").update(chapterUpdate).eq("id", chapter.id);
+      if (chapterUpdateError) throw chapterUpdateError;
+
+      const pathChapter = detectedChapter ?? chapter.chapter_number;
+      for (let i = 0; i < prepared.imageFiles.length; i++) hashes.push(await uploadImportedPage(
+        { ...chapter, chapter_number: pathChapter },
+        series,
+        prepared.imageFiles[i],
+        i + 1,
+      ));
+      const sourceHash = prepared.sourceHash ?? sha256(Buffer.from(hashes.join("|")));
+      await supabase.from("chapters").update({
+        source_sha256: sourceHash, source_canonical_url: prepared.sourceUrl,
+      }).eq("id", chapter.id);
+    } else {
+      throw new Error(`Tipo de fonte não suportado: ${chapter.source_type}`);
+    }
+
+    const aggregateHash = chapter.source_type === "images" ? sha256(Buffer.from(hashes.join("|"))) : null;
+    if (aggregateHash) await supabase.from("chapters").update({ source_sha256: aggregateHash }).eq("id", chapter.id);
+    await supabase.from("chapters").update({ status: "processing", error_message: null, pipeline_version: "v2" }).eq("id", chapter.id);
+    await updateChapterProgress(chapter.id);
+
+    const { data: pages } = await supabase.from("pages").select("id").eq("chapter_id", chapter.id).order("page_number");
+    for (const page of pages ?? []) await enqueue("analyze_page", page.id);
+  } catch (error) {
+    await failChapter(chapter.id, error instanceof Error ? error.message : "Falha na ingestão.");
+    throw error;
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
   }
-
-  await supabase
-    .from("chapters")
-    .update({ status: "processing" })
-    .eq("id", job.chapter_id);
 }
 
-async function storeAnalysis(
-  pageId: string,
-  sourceLanguage: string,
-  targetLanguage: string,
-  parsed: Record<string, unknown>,
-) {
+async function storeAnalysis(pageId: string, sourceLanguage: string, targetLanguage: string, parsed: Record<string, unknown>) {
   const bubbles = Array.isArray(parsed.bubbles) ? parsed.bubbles : [];
-
+  await supabase.from("page_analyses").delete().eq("page_id", pageId);
   const { error } = await supabase.from("page_analyses").insert({
-    page_id: pageId,
-    model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-    model_version: null,
-    source_language: sourceLanguage,
-    target_language: targetLanguage,
-    story_context:
-      typeof parsed.story_context === "string" ? parsed.story_context : null,
-    visual_context:
-      typeof parsed.visual_context === "string" ? parsed.visual_context : null,
-    ocr_text: bubbles
-      .map((bubble) =>
-        bubble &&
-        typeof bubble === "object" &&
-        "source_text" in bubble &&
-        typeof bubble.source_text === "string"
-          ? bubble.source_text
-          : "",
-      )
-      .filter(Boolean)
-      .join("\n"),
+    page_id: pageId, model: process.env.GEMINI_MODEL || "gemini-2.5-flash", model_version: null,
+    source_language: sourceLanguage, target_language: targetLanguage,
+    story_context: typeof parsed.story_context === "string" ? parsed.story_context : null,
+    visual_context: typeof parsed.visual_context === "string" ? parsed.visual_context : null,
+    ocr_text: bubbles.map((b) => b && typeof b === "object" && typeof (b as any).source_text === "string" ? (b as any).source_text : "").filter(Boolean).join("\n"),
     analysis_json: parsed,
   });
-
   if (error) throw error;
 
+  await supabase.from("speech_bubbles").delete().eq("page_id", pageId);
   for (const bubble of bubbles) {
-    if (!bubble || typeof bubble !== "object") continue;
-
+    if (!bubble || typeof bubble !== "object" || typeof (bubble as any).bubble_index !== "number") continue;
     const item = bubble as Record<string, unknown>;
-    if (typeof item.bubble_index !== "number") continue;
-
-    await supabase.from("speech_bubbles").upsert(
-      {
-        page_id: pageId,
-        bubble_index: item.bubble_index,
-        polygon: Array.isArray(item.polygon) ? item.polygon : [],
-        bbox: item.bbox ?? null,
-        source_text:
-          typeof item.source_text === "string" ? item.source_text : null,
-        translated_text: null,
-        translation_notes: null,
-        confidence:
-          typeof item.confidence === "number" ? item.confidence : null,
-        style_json: {
-          ...(item.style_json &&
-          typeof item.style_json === "object"
-            ? item.style_json
-            : {}),
-          intent: typeof item.intent === "string" ? item.intent : null,
-          speaker_hint:
-            typeof item.speaker_hint === "string" ? item.speaker_hint : null,
-        },
+    const { error: bubbleError } = await supabase.from("speech_bubbles").insert({
+      page_id: pageId, bubble_index: item.bubble_index,
+      polygon: Array.isArray(item.polygon) ? item.polygon : [], bbox: item.bbox ?? null,
+      source_text: typeof item.source_text === "string" ? item.source_text : null,
+      translated_text: null, translation_notes: null,
+      confidence: typeof item.confidence === "number" ? item.confidence : null,
+      style_json: {
+        ...(item.style_json && typeof item.style_json === "object" ? item.style_json : {}),
+        intent: typeof item.intent === "string" ? item.intent : null,
+        speaker_hint: typeof item.speaker_hint === "string" ? item.speaker_hint : null,
       },
-      { onConflict: "page_id,bubble_index" },
-    );
+    });
+    if (bubbleError) throw bubbleError;
   }
 }
 
-async function maybeBuildChapterContext(
-  chapterId: string,
-  title: string,
-) {
-  const { data: pages, error: pagesError } = await supabase
-    .from("pages")
-    .select("id, page_number, status")
-    .eq("chapter_id", chapterId)
-    .order("page_number");
+async function maybeBuildChapterContext(chapterId: string) {
+  const { data: chapter, error: chapterError } = await supabase.from("chapters")
+    .select("title,context_updated_at,series_id").eq("id", chapterId).single();
+  if (chapterError || !chapter) throw chapterError || new Error("Capítulo não encontrado.");
+  if (chapter.context_updated_at) return;
 
+  const { data: pages, error: pagesError } = await supabase.from("pages")
+    .select("id,page_number,status").eq("chapter_id", chapterId).order("page_number");
   if (pagesError) throw pagesError;
-  if (!pages?.length || pages.some((page) => page.status !== "analyzed")) return;
-
-  const { data: chapter } = await supabase
-    .from("chapters")
-    .select("context_updated_at")
-    .eq("id", chapterId)
-    .single();
-
-  if (chapter?.context_updated_at) return;
+  if (!pages?.length || pages.some((p) => p.status !== "analyzed")) return;
 
   const analyses = [];
   for (const page of pages) {
-    const { data: analysis, error } = await supabase
-      .from("page_analyses")
-      .select("story_context, visual_context, analysis_json")
-      .eq("page_id", page.id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (error || !analysis) return;
-
-    const analysisJson =
-      analysis.analysis_json &&
-      typeof analysis.analysis_json === "object"
-        ? (analysis.analysis_json as Record<string, unknown>)
-        : {};
-
-    analyses.push({
-      page_number: page.page_number,
-      story_context: analysis.story_context,
-      visual_context: analysis.visual_context,
-      bubbles: analysisJson.bubbles ?? [],
-    });
+    const { data: analysis } = await supabase.from("page_analyses").select("story_context,visual_context,analysis_json")
+      .eq("page_id", page.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!analysis) return;
+    const json = analysis.analysis_json && typeof analysis.analysis_json === "object" ? analysis.analysis_json as Record<string, unknown> : {};
+    analyses.push({ page_number: page.page_number, story_context: analysis.story_context, visual_context: analysis.visual_context, bubbles: json.bubbles ?? [] });
   }
 
-  const context = await buildChapterContext({ title, analyses });
+  const context = await buildChapterContext({ title: chapter.title || "Capítulo", analyses });
+  const { data: updated, error: updateError } = await supabase.from("chapters").update({
+    context_text: typeof context.summary === "string" ? context.summary : null,
+    context_json: context, context_model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    context_version: "v2", context_updated_at: new Date().toISOString(), status: "processing",
+  }).eq("id", chapterId).is("context_updated_at", null).select("id").maybeSingle();
+  if (updateError) throw updateError;
+  if (!updated) return;
 
-  const { error: contextError } = await supabase
-    .from("chapters")
-    .update({
-      context_text:
-        typeof context.summary === "string" ? context.summary : null,
-      context_json: context,
-      context_model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
-      context_version: "v1",
-      context_updated_at: new Date().toISOString(),
-      status: "processing",
-    })
-    .eq("id", chapterId)
-    .is("context_updated_at", null);
-
-  if (contextError) throw contextError;
-
-  for (const page of pages) {
-    await enqueue("translate_page", page.id);
-  }
+  await updateChapterProgress(chapterId);
+  for (const page of pages) await enqueue("translate_page", page.id);
 }
 
 async function processAnalysis(job: Job) {
   if (!job.page_id) throw new Error("analyze_page sem page_id");
+  const { data: page, error } = await supabase.from("pages").select("id,original_path,chapter_id").eq("id", job.page_id).single();
+  if (error || !page) throw error || new Error("Página não encontrada.");
 
-  const { data: page, error: pageError } = await supabase
-    .from("pages")
-    .select(
-      "id, original_path, chapter_id, chapters(series_id, chapter_number, title, manga_series(source_language, target_language, title))",
-    )
-    .eq("id", job.page_id)
-    .single();
+  const { data: chapter } = await supabase.from("chapters").select("title,series_id").eq("id", page.chapter_id).single();
+  if (!chapter) throw new Error("Capítulo não encontrado.");
+  const { data: series } = await supabase.from("manga_series").select("title,source_language,target_language").eq("id", chapter.series_id).single();
+  if (!series) throw new Error("Obra não encontrada.");
 
-  if (pageError || !page) throw pageError || new Error("Página não encontrada");
-
-  await supabase
-    .from("pages")
-    .update({ status: "analyzing", error_message: null })
-    .eq("id", page.id);
-
-  const { data: file, error: fileError } = await supabase.storage
-    .from("manga-pages")
-    .download(page.original_path);
-
-  if (fileError || !file) {
-    throw fileError || new Error("Não foi possível baixar a página original");
-  }
-
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const imageBase64 = Buffer.from(bytes).toString("base64");
-  const mimeType = file.type || "image/jpeg";
-
-  const chapterData = page.chapters as unknown as {
-    title: string | null;
-    manga_series: {
-      source_language: string;
-      target_language: string;
-      title: string;
-    };
-  };
+  await supabase.from("pages").update({ status: "analyzing", error_message: null }).eq("id", page.id);
+  const { data: file, error: fileError } = await supabase.storage.from("manga-pages").download(page.original_path);
+  if (fileError || !file) throw fileError || new Error("Não foi possível baixar a página original.");
 
   const parsed = await analyzePageWithGemini({
-    imageBase64,
-    mimeType,
+    imageBase64: Buffer.from(await file.arrayBuffer()).toString("base64"),
+    mimeType: file.type || "image/jpeg",
   });
-
-  await storeAnalysis(
-    page.id,
-    chapterData.manga_series.source_language,
-    chapterData.manga_series.target_language,
-    parsed,
-  );
-
-  await supabase
-    .from("pages")
-    .update({ status: "analyzed", error_message: null })
-    .eq("id", page.id);
-
-  await maybeBuildChapterContext(
-    page.chapter_id,
-    chapterData.title || chapterData.manga_series.title,
-  );
+  await storeAnalysis(page.id, series.source_language, series.target_language, parsed);
+  await supabase.from("pages").update({ status: "analyzed", error_message: null }).eq("id", page.id);
+  await updateChapterProgress(page.chapter_id);
+  await maybeBuildChapterContext(page.chapter_id);
 }
 
 async function processTranslation(job: Job) {
   if (!job.page_id) throw new Error("translate_page sem page_id");
+  const { data: page, error } = await supabase.from("pages").select("id,chapter_id").eq("id", job.page_id).single();
+  if (error || !page) throw error || new Error("Página não encontrada.");
 
-  const { data: page, error: pageError } = await supabase
-    .from("pages")
-    .select(
-      "id, chapter_id, chapters(title, context_json, manga_series(id, source_language, target_language))",
-    )
-    .eq("id", job.page_id)
-    .single();
+  const { data: chapter } = await supabase.from("chapters").select("context_json,series_id").eq("id", page.chapter_id).single();
+  if (!chapter) throw new Error("Capítulo não encontrado.");
+  const { data: series } = await supabase.from("manga_series").select("id,source_language,target_language").eq("id", chapter.series_id).single();
+  if (!series) throw new Error("Obra não encontrada.");
 
-  if (pageError || !page) throw pageError || new Error("Página não encontrada");
-
-  const chapter = page.chapters as unknown as {
-    context_json: Record<string, unknown>;
-    manga_series: {
-      id: string;
-      source_language: string;
-      target_language: string;
-    };
-  };
-
-  const { data: bubbles, error: bubblesError } = await supabase
-    .from("speech_bubbles")
-    .select("bubble_index, source_text, style_json")
-    .eq("page_id", page.id)
-    .order("bubble_index");
-
+  const { data: bubbles, error: bubblesError } = await supabase.from("speech_bubbles")
+    .select("bubble_index,source_text,style_json").eq("page_id", page.id).order("bubble_index");
   if (bubblesError) throw bubblesError;
-
-  const { data: glossary, error: glossaryError } = await supabase
-    .from("glossary_terms")
-    .select("source_term, preferred_translation, notes")
-    .eq("series_id", chapter.manga_series.id);
-
+  const { data: glossary, error: glossaryError } = await supabase.from("glossary_terms")
+    .select("source_term,preferred_translation,notes").eq("series_id", series.id);
   if (glossaryError) throw glossaryError;
 
-  await supabase
-    .from("pages")
-    .update({ status: "translating", error_message: null })
-    .eq("id", page.id);
-
+  await supabase.from("pages").update({ status: "translating", error_message: null }).eq("id", page.id);
   const result = await translatePageWithGemini({
-    sourceLanguage: chapter.manga_series.source_language,
-    targetLanguage: chapter.manga_series.target_language,
-    chapterContext: chapter.context_json,
-    bubbles: (bubbles ?? []).map((bubble) => ({
-      bubble_index: bubble.bubble_index,
-      source_text: bubble.source_text,
-      intent:
-        bubble.style_json &&
-        typeof bubble.style_json === "object" &&
-        "intent" in bubble.style_json
-          ? String((bubble.style_json as Record<string, unknown>).intent ?? "")
-          : null,
-      speaker_hint:
-        bubble.style_json &&
-        typeof bubble.style_json === "object" &&
-        "speaker_hint" in bubble.style_json
-          ? String(
-              (bubble.style_json as Record<string, unknown>).speaker_hint ?? "",
-            )
-          : null,
-      style_json:
-        bubble.style_json &&
-        typeof bubble.style_json === "object"
-          ? (bubble.style_json as Record<string, unknown>)
-          : {},
+    sourceLanguage: series.source_language, targetLanguage: series.target_language,
+    chapterContext: (chapter.context_json ?? {}) as Record<string, unknown>,
+    bubbles: (bubbles ?? []).map((b) => ({
+      bubble_index: b.bubble_index, source_text: b.source_text,
+      intent: b.style_json && typeof b.style_json === "object" ? String((b.style_json as any).intent ?? "") : null,
+      speaker_hint: b.style_json && typeof b.style_json === "object" ? String((b.style_json as any).speaker_hint ?? "") : null,
+      style_json: b.style_json && typeof b.style_json === "object" ? b.style_json as Record<string, unknown> : {},
     })),
     glossary: glossary ?? [],
   });
 
-  const translations = Array.isArray(result.translations)
-    ? result.translations
-    : [];
-
-  for (const translation of translations) {
-    if (!translation || typeof translation !== "object") continue;
-
+  for (const translation of Array.isArray(result.translations) ? result.translations : []) {
+    if (!translation || typeof translation !== "object" || typeof (translation as any).bubble_index !== "number") continue;
     const item = translation as Record<string, unknown>;
-    if (typeof item.bubble_index !== "number") continue;
-
-    await supabase
-      .from("speech_bubbles")
-      .update({
-        translated_text:
-          typeof item.translated_text === "string"
-            ? item.translated_text
-            : null,
-        translation_notes:
-          typeof item.translation_notes === "string"
-            ? item.translation_notes
-            : null,
-        confidence:
-          typeof item.confidence === "number" ? item.confidence : null,
-      })
-      .eq("page_id", page.id)
-      .eq("bubble_index", item.bubble_index);
+    const { error: updateError } = await supabase.from("speech_bubbles").update({
+      translated_text: typeof item.translated_text === "string" ? item.translated_text : null,
+      translation_notes: typeof item.translation_notes === "string" ? item.translation_notes : null,
+      confidence: typeof item.confidence === "number" ? item.confidence : null,
+    }).eq("page_id", page.id).eq("bubble_index", item.bubble_index);
+    if (updateError) throw updateError;
   }
 
-  await supabase
-    .from("pages")
-    .update({ status: "translated", error_message: null })
-    .eq("id", page.id);
+  await supabase.from("pages").update({ status: "translated", error_message: null }).eq("id", page.id);
+  await updateChapterProgress(page.chapter_id);
+  await enqueue("render_page", page.id);
+}
+
+async function processRender(job: Job) {
+  if (!job.page_id) throw new Error("render_page sem page_id");
+  const { data: page, error } = await supabase.from("pages").select("id,chapter_id,page_number,original_path").eq("id", job.page_id).single();
+  if (error || !page) throw error || new Error("Página não encontrada.");
+  const { data: chapter } = await supabase.from("chapters").select("series_id,chapter_number").eq("id", page.chapter_id).single();
+  if (!chapter) throw new Error("Capítulo não encontrado.");
+  const { data: series } = await supabase.from("manga_series").select("id,owner_id,anonymous_session_id").eq("id", chapter.series_id).single();
+  if (!series) throw new Error("Obra não encontrada.");
+  const { data: bubbles, error: bubblesError } = await supabase.from("speech_bubbles")
+    .select("polygon,bbox,translated_text,style_json").eq("page_id", page.id).order("bubble_index");
+  if (bubblesError) throw bubblesError;
+
+  const workDir = path.join(TMP_ROOT, `render-${page.id}-${Date.now()}`);
+  await mkdir(workDir, { recursive: true });
+  try {
+    const { data: file, error: downloadError } = await supabase.storage.from("manga-pages").download(page.original_path);
+    if (downloadError || !file) throw downloadError || new Error("Não foi possível baixar o original.");
+    const originalPath = path.join(workDir, "original");
+    const outputPath = path.join(workDir, "translated.png");
+    const maskPath = path.join(workDir, "mask.png");
+    await writeFile(originalPath, Buffer.from(await file.arrayBuffer()));
+
+    await supabase.from("pages").update({ status: "rendering", error_message: null }).eq("id", page.id);
+    await updateChapterProgress(page.chapter_id);
+
+    await renderPage({
+      originalPath, outputPath, maskPath,
+      bubbles: (bubbles ?? []).map((b) => ({ polygon: b.polygon, bbox: b.bbox, translated_text: b.translated_text, style_json: b.style_json })),
+    });
+    const qa = await verifyPixelIntegrity(originalPath, outputPath, maskPath);
+    if (!qa.passed || qa.changedOutsideMask !== 0) throw new Error("QA de integridade de pixels falhou.");
+
+    const translatedBuffer = await readFile(outputPath);
+    const maskBuffer = await readFile(maskPath);
+    const prefix = actorPrefix(series);
+    const translatedPath = `${prefix}/${series.id}/${chapter.chapter_number}/translated/${String(page.page_number).padStart(4,"0")}.png`;
+    const maskStoragePath = `${prefix}/${series.id}/${chapter.chapter_number}/masks/${String(page.page_number).padStart(4,"0")}.png`;
+
+    const { error: translatedUploadError } = await supabase.storage.from("manga-pages").upload(translatedPath, translatedBuffer, { contentType: "image/png", upsert: true });
+    if (translatedUploadError) throw translatedUploadError;
+    const { error: maskUploadError } = await supabase.storage.from("manga-pages").upload(maskStoragePath, maskBuffer, { contentType: "image/png", upsert: true });
+    if (maskUploadError) throw maskUploadError;
+
+    const { error: pageUpdateError } = await supabase.from("pages").update({
+      translated_path: translatedPath, authorized_mask_path: maskStoragePath,
+      translated_sha256: sha256(translatedBuffer), render_version: "deterministic-v1",
+      status: "ready", error_message: null,
+    }).eq("id", page.id);
+    if (pageUpdateError) throw pageUpdateError;
+
+    await updateChapterProgress(page.chapter_id);
+    const { data: remaining } = await supabase.from("pages").select("status").eq("chapter_id", page.chapter_id);
+    if ((remaining ?? []).length && (remaining ?? []).every((p) => p.status === "ready")) {
+      await supabase.from("chapters").update({
+        status: "ready", error_message: null,
+        progress_json: { download:100, analysis:100, context:100, translation:100, render:100, qa:100, overall:100, contextReady:100 },
+      }).eq("id", page.chapter_id);
+      await supabase.from("manga_series").update({ status: "ready" }).eq("id", chapter.series_id);
+    }
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
 }
 
 async function processJob(job: Job) {
   switch (job.job_type) {
-    case "process_chapter":
-      return processChapter(job);
-    case "analyze_page":
-      return processAnalysis(job);
-    case "translate_page":
-      return processTranslation(job);
-    case "render_page":
-      throw new Error("render_page ainda depende do renderer determinístico");
+    case "process_chapter": return processChapter(job);
+    case "analyze_page": return processAnalysis(job);
+    case "translate_page": return processTranslation(job);
+    case "render_page": return processRender(job);
   }
 }
 
 async function run() {
   console.log(`Tradumanga worker iniciado: ${workerId}`);
-
   while (true) {
     const job = await claimJob();
-
-    if (!job) {
-      await sleep(2000);
-      continue;
-    }
-
-    console.log(
-      JSON.stringify({
-        event: "job_claimed",
-        worker_id: workerId,
-        job_id: job.id,
-        job_type: job.job_type,
-        page_id: job.page_id,
-        chapter_id: job.chapter_id,
-        attempt: job.attempts,
-      }),
-    );
-
+    if (!job) { await sleep(2000); continue; }
+    console.log(JSON.stringify({ event:"job_claimed", worker_id:workerId, job_id:job.id, job_type:job.job_type, page_id:job.page_id, chapter_id:job.chapter_id, attempt:job.attempts }));
     try {
       await processJob(job);
-      await completeJob(job, { worker_id: workerId });
-      console.log(
-        JSON.stringify({
-          event: "job_completed",
-          worker_id: workerId,
-          job_id: job.id,
-        }),
-      );
+      await completeJob(job, { worker_id: workerId, pipeline_version: "v2" });
+      console.log(JSON.stringify({ event:"job_completed", worker_id:workerId, job_id:job.id }));
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown worker error";
-
-      console.error(
-        JSON.stringify({
-          event: "job_failed",
-          worker_id: workerId,
-          job_id: job.id,
-          error: message,
-        }),
-      );
-
-      await failJob(job, message);
+      const message = error instanceof Error ? error.message : "Unknown worker error";
+      console.error(JSON.stringify({ event:"job_failed", worker_id:workerId, job_id:job.id, error:message }));
+      try { await failJob(job, message); } catch (failError) { console.error(failError); }
     }
   }
 }
 
-run().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+run().catch((error) => { console.error(error); process.exit(1); });
