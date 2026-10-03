@@ -106,7 +106,7 @@ async function downloadWithGalleryDl(url: string, directory: string) {
     maxBuffer: 4 * 1024 * 1024,
   });
   const files = await listFiles(directory);
-  return files.filter((file) => /\\.(?:jpe?g|png|webp|gif|bmp|tiff?)$/i.test(file)).sort(naturalCompare);
+  return files.filter((file) => /\.(?:jpe?g|png|webp|gif|bmp|tiff?)$/i.test(file)).sort(naturalCompare);
 }
 
 
