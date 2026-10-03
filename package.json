@@ -6,8 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "worker": "tsx worker/src/index.ts"
+    "lint": "next lint"
   },
   "dependencies": {
     "@google/genai": "^1.20.0",
