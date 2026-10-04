@@ -27,7 +27,7 @@ export async function GET(req: Request) {
       `<meta property="og:title" content="${escapeHtml(title)}">`,
       manifest.coverUrl ? `<meta property="og:image" content="${escapeHtml(manifest.coverUrl)}">` : "",
       `<meta name="description" content="MangaDex chapter ${escapeHtml(manifest.chapterId)}">`,
-      "</head><body><main class="reading-content">",
+      '</head><body><main class="reading-content">',
       ...manifest.imageUrls.map((url, index) =>
         `<img class="wp-manga-chapter-img" data-page="${index + 1}" src="${escapeHtml(url)}" alt="page ${index + 1}">`
       ),
