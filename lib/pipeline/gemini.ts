@@ -161,6 +161,9 @@ Retorne SOMENTE JSON válido no formato:
       "intent": "intenção/ato de fala",
       "speaker_hint": "identificação contextual, se possível",
       "confidence": 0.0,
+      "lines": [
+        [{"x":0,"y":0},{"x":0,"y":0},{"x":0,"y":0},{"x":0,"y":0}]
+      ],
       "style_json": {
         "orientation": "horizontal",
         "text_type": "dialogue",
