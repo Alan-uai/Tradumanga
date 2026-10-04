@@ -254,15 +254,76 @@ export const renderPage = inngest.createFunction(
       if (fe || !file) throw fe || new Error("Não foi possível baixar o original.");
       const original = Buffer.from(await file.arrayBuffer());
       await admin.from("pages").update({ status:"rendering",error_message:null }).eq("id",pageId);
-      const rendered=await renderTranslatedPage(original,(bubbles??[]).map((b:any)=>({polygon:b.polygon,bbox:b.bbox,source_text:b.source_text,translated_text:b.translated_text,style_json:b.style_json})));
+      const rendered=await renderTranslatedPage(original,(bubbles??[]).map((b:any)=>({
+        bubble_index:b.bubble_index,
+        polygon:b.polygon,
+        bbox:b.bbox,
+        source_text:b.source_text,
+        translated_text:b.translated_text,
+        style_json:b.style_json,
+      })));
+      if(!rendered.qa.passed) throw new Error(`QA de camadas falhou: ${rendered.qa.changedOutsideMask} pixels alterados fora das regiões autorizadas.`);
+
       const prefix=actorPrefix(series);
-      const translatedPath=`${prefix}/${series.id}/${chapter.chapter_number}/translated/${String(page.page_number).padStart(4,"0")}.png`;
-      const maskPath=`${prefix}/${series.id}/${chapter.chapter_number}/masks/${String(page.page_number).padStart(4,"0")}.png`;
+      const stem=`${String(page.page_number).padStart(4,"0")}`;
+      const translatedPath=`${prefix}/${series.id}/${chapter.chapter_number}/translated/${stem}.png`;
+      const cleanPath=`${prefix}/${series.id}/${chapter.chapter_number}/clean/${stem}.png`;
+      const maskPath=`${prefix}/${series.id}/${chapter.chapter_number}/masks/${stem}.png`;
+      const manifestPath=`${prefix}/${series.id}/${chapter.chapter_number}/layers/${stem}.json`;
+
       const {error:tu}=await admin.storage.from("manga-pages").upload(translatedPath,rendered.translated,{contentType:"image/png",upsert:true});if(tu)throw tu;
+      const {error:cu}=await admin.storage.from("manga-pages").upload(cleanPath,rendered.clean,{contentType:"image/png",upsert:true});if(cu)throw cu;
       const {error:mu}=await admin.storage.from("manga-pages").upload(maskPath,rendered.mask,{contentType:"image/png",upsert:true});if(mu)throw mu;
+
+      const manifest=rendered.manifest.map((item:any)=>{
+        const bubbleIndex=Number(item.bubble_index);
+        return {
+          ...item,
+          clean_layer_path:`${prefix}/${series.id}/${chapter.chapter_number}/layers/${stem}/clean-${String(bubbleIndex).padStart(4,"0")}.png`,
+          text_layer_path:`${prefix}/${series.id}/${chapter.chapter_number}/layers/${stem}/text-${String(bubbleIndex).padStart(4,"0")}.png`,
+        };
+      });
+      const manifestBuffer=Buffer.from(JSON.stringify({
+        version:"page-layers-v1",
+        page_id:pageId,
+        width:rendered.qa.width,
+        height:rendered.qa.height,
+        original_sha256:sha256(original),
+        layers:manifest,
+      },null,2));
+      const {error:manu}=await admin.storage.from("manga-pages").upload(manifestPath,manifestBuffer,{contentType:"application/json",upsert:true});if(manu)throw manu;
+
+      for(const layer of rendered.cleanLayers){
+        const item=manifest.find((entry:any)=>Number(entry.bubble_index)===layer.bubbleIndex);
+        if(!item) continue;
+        const cleanLayerPath=String(item.clean_layer_path);
+        const {error:ce}=await admin.storage.from("manga-pages").upload(cleanLayerPath,layer.buffer,{contentType:"image/png",upsert:true});if(ce)throw ce;
+      }
+
+      for(const layer of rendered.textLayers){
+        const item=manifest.find((entry:any)=>Number(entry.bubble_index)===layer.bubbleIndex);
+        if(!item) continue;
+        const textPath=String(item.text_layer_path);
+        const {error:te}=await admin.storage.from("manga-pages").upload(textPath,layer.buffer,{contentType:"image/png",upsert:true});if(te)throw te;
+        const cleanLayerPath=String(item.clean_layer_path);
+        const {error:be}=await admin.from("speech_bubbles").update({
+          clean_layer_path:cleanLayerPath,
+          text_layer_path:textPath,
+          layer_status:"rendered",
+        }).eq("page_id",pageId).eq("bubble_index",layer.bubbleIndex);
+        if(be)throw be;
+      }
+
       const {error:pu}=await admin.from("pages").update({
-        translated_path:translatedPath,translated_sha256:sha256(rendered.translated),authorized_mask_path:maskPath,
-        render_version:"v3-sharp",status:"ready",error_message:null,
+        translated_path:translatedPath,
+        clean_path:cleanPath,
+        layer_manifest_path:manifestPath,
+        translated_sha256:sha256(rendered.translated),
+        authorized_mask_path:maskPath,
+        layer_render_version:"v1",
+        render_version:"v4-layers",
+        status:"ready",
+        error_message:null,
       }).eq("id",pageId);if(pu)throw pu;
       await progress(admin,page.chapter_id);
       const {data:all,error:ae}=await admin.from("pages").select("status").eq("chapter_id",page.chapter_id);if(ae)throw ae;

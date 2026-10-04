@@ -8,6 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
+import { renderPageLayers } from "@/lib/pipeline/page-layers";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
@@ -766,92 +767,10 @@ async function renderTextLayer(input:{text:string;vertical:boolean;align:TextAli
     }
   }
 }
-export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[]){
-  const meta=await sharp(original).metadata(),w=meta.width??0,h=meta.height??0;
-  if(!w||!h)throw new Error("Imagem original inválida.");
-  const eligible=bubbles.filter((b)=>{
-    const text=b.translated_text?.trim();
-    if(!text)return false;
-    const source=b.source_text?.trim();
-    if(source&&source.localeCompare(text,undefined,{sensitivity:"base"})===0)return false;
-    const type=String(b.style_json?.text_type??"dialogue").toLowerCase();
-    return !["title","logo","watermark","credit"].includes(type);
-  });
-
-  if(!eligible.length){
-    const png=await sharp(original).png().toBuffer();
-    const mask=await sharp({create:{width:w,height:h,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png().toBuffer();
-    return {translated:png,mask,qa:{passed:true,changedInsideMask:0,changedOutsideMask:0,width:w,height:h,model:"openrouter",renderedBubbles:0}};
-  }
-
-  const {renderPageWithOpenRouter}=await import("@/lib/pipeline/openrouter-image");
-  const edited=await renderPageWithOpenRouter({original,bubbles:eligible,width:w,height:h});
-
-  // The model is allowed to edit the page, but its output is never trusted
-  // outside Gemini-authorized text regions. This hard boundary prevents
-  // character/background/line-art drift even when an image model over-edits.
-  const normalized=await sharp(edited.image,{failOn:"warning"})
-    .resize({width:w,height:h,fit:"fill"})
-    .png().toBuffer();
-  const mask=await buildAuthorizedTextMask(eligible,w,h);
-  const maskedEdited=await sharp(normalized,{failOn:"warning"})
-    .composite([{input:mask,blend:"dest-in"}])
-    .png().toBuffer();
-  const translated=await sharp(original,{failOn:"warning"})
-    .composite([{input:maskedEdited,left:0,top:0,blend:"over"}])
-    .png().toBuffer();
-
-  const qa=await inspectRenderedOutput(original,translated,mask);
-  return {translated,mask,qa:{...qa,model:"openrouter",modelId:edited.model,renderedBubbles:eligible.length,costUsd:edited.costUsd??null}};
+export async function renderTranslatedPage(original: Buffer, bubbles: RenderBubble[]) {
+  return renderPageLayers(original, bubbles);
 }
 
-async function buildAuthorizedTextMask(bubbles:RenderBubble[],w:number,h:number){
-  const paths:string[]=[];
-  for(const b of bubbles){
-    try{
-      const g=geometry(b,w,h);
-      if(g.width<=0||g.height<=0)continue;
-      const points=g.poly.map((p)=>`${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
-      if(points)paths.push(`<polygon points="${points}" fill="white"/>`);
-    }catch(error){
-      console.warn(JSON.stringify({event:"render_mask_region_skipped",bbox:b.bbox,error:error instanceof Error?error.message:String(error)}));
-    }
-  }
-  if(!paths.length){
-    return await sharp({create:{width:w,height:h,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png().toBuffer();
-  }
-  return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="black" fill-opacity="0"/>${paths.join("")}</svg>`);
-}
-
-function parseHexColor(value:unknown){
-  const fallback={r:255,g:255,b:255,alpha:1};
-  if(typeof value!=="string")return fallback;
-  const m=value.trim().match(/^#([0-9a-f]{6}|[0-9a-f]{8})$/i);
-  if(!m)return fallback;
-  const hex=m[1];
-  return{r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16),alpha:hex.length===8?parseInt(hex.slice(6,8),16)/255:1};
-}
-
-function fillSvg(w:number,h:number,poly:{x:number;y:number}[],fill:{r:number;g:number;b:number;alpha:number}){
-  const d=poly.map((p,i)=>(i?"L":"M")+p.x.toFixed(1)+","+p.y.toFixed(1)).join(" ")+" Z";
-  return Buffer.from('<svg width="'+w+'" height="'+h+'" xmlns="http://www.w3.org/2000/svg"><path d="'+d+'" fill="rgb('+fill.r+','+fill.g+','+fill.b+')" fill-opacity="'+fill.alpha+'"/></svg>');
-}
-
-async function inspectRenderedOutput(original:Buffer,translated:Buffer,mask:Buffer){
-  const[a,b,m]=await Promise.all([
-    sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),
-    sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),
-    sharp(mask).removeAlpha().greyscale().raw().toBuffer({resolveWithObject:true}),
-  ]);
-  if(a.info.width!==b.info.width||a.info.height!==b.info.height||m.info.width!==a.info.width||m.info.height!==a.info.height)throw new Error("QA render: dimensões incompatíveis.");
-  let outside=0,inside=0;
-  for(let i=0,p=0;i<a.data.length;i+=a.info.channels,p++){
-    const changed=a.data[i]!==b.data[i]||a.data[i+1]!==b.data[i+1]||a.data[i+2]!==b.data[i+2];
-    if(changed&&m.data[p]>0)inside++;
-    if(changed&&m.data[p]===0)outside++;
-  }
-  return{passed:outside===0,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height};
-}
 
 export const progress=async(admin:any,chapterId:string)=>{
   const [{data:pages,error:pe},{data:chapter,error:ce}]=await Promise.all([admin.from("pages").select("status").eq("chapter_id",chapterId),admin.from("chapters").select("context_updated_at").eq("id",chapterId).single()]);if(pe)throw pe;if(ce)throw ce;
