@@ -190,6 +190,44 @@ function embeddedChapterImageUrls(html:string){
   }
   return out;
 }
+function madaraPagerPageUrls(html:string,firstUrl:string){
+  const pagerMatch=html.match(/<select\\b[^>]*id=[\"']single-pager[\"'][^>]*>([\\s\\S]*?)<\\/select>/i);
+  if(!pagerMatch)return [] as string[];
+  const block=pagerMatch[1];
+  const options=[...block.matchAll(/<option\\b[^>]*value=[\"']([^\"]+)[\"'][^>]*>/gi)]
+    .map(m=>m[1].trim())
+    .filter(Boolean);
+  const absoluteOptions=options.map(raw=>{
+    try{
+      const u=new URL(raw,firstUrl);
+      return /^https?:$/i.test(u.protocol)?u.toString():null;
+    }catch{return null;}
+  }).filter((x):x is string=>Boolean(x));
+  if(absoluteOptions.length>=2)return [...new Set(absoluteOptions)];
+
+  const count=(block.match(/<option\\b/gi)??[]).length;
+  if(count<2)return [] as string[];
+
+  try{
+    const u=new URL(firstUrl);
+    const match=u.pathname.match(/(\\d+)(?=\\.[a-z0-9]+$)/i);
+    if(!match)return [] as string[];
+    const token=match[1];
+    const pad=token.length;
+    const start=Number(token);
+    if(!Number.isFinite(start))return [] as string[];
+    const out:string[]=[];
+    for(let i=0;i<count;i++){
+      const value=String(start+i).padStart(pad,"0");
+      const pathname=u.pathname.slice(0,match.index??0)+value+u.pathname.slice((match.index??0)+token.length);
+      const page=new URL(u.toString());
+      page.pathname=pathname;
+      out.push(page.toString());
+    }
+    return [...new Set(out)];
+  }catch{return [] as string[];}
+}
+
 function imageUrls(html:string,base:string){
   const out:ImageCandidate[]=[],seen=new Set<string>(),orderRef={value:0};
 
@@ -263,6 +301,18 @@ function imageUrls(html:string,base:string){
   for(const m of escapedBlock.matchAll(directImageRe)){
     addImageCandidate(out,seen,m[0],base,"reader normalized-js",orderRef);
     if(out.length>=MAX_HTML_IMAGES)break;
+  }
+
+  // Madara's paged reader can expose exactly one image while a hidden
+  // #single-pager select tells us how many image files exist. In that case,
+  // derive the remaining page URLs from the first image filename instead of
+  // treating the first page as the entire chapter.
+  if(out.length===1){
+    const pagerPages=madaraPagerPageUrls(html,out[0].url);
+    for(const pageUrl of pagerPages){
+      addImageCandidate(out,seen,pageUrl,base,"reader madara-single-pager",orderRef);
+      if(out.length>=MAX_HTML_IMAGES)break;
+    }
   }
 
   return out.slice(0,MAX_HTML_IMAGES);
