@@ -581,7 +581,7 @@ async function uploadPage(admin:any,series:any,chapter:any,buffer:Buffer,pageNum
 
 export async function ingestChapter(chapterId:string){
   const admin=createAdminClient();
-  const {data:chapter,error:ce}=await admin.from("chapters").select("id,series_id,chapter_number,source_type,source_url,source_path").eq("id",chapterId).single();if(ce||!chapter)throw ce||new Error("Capítulo não encontrado.");
+  const {data:chapter,error:ce}=await admin.from("chapters").select("id,series_id,chapter_number,source_type,source_url,source_path,source_metadata").eq("id",chapterId).single();if(ce||!chapter)throw ce||new Error("Capítulo não encontrado.");
   const {data:series,error:se}=await admin.from("manga_series").select("id,owner_id,anonymous_session_id,title").eq("id",chapter.series_id).single();if(se||!series)throw se||new Error("Obra não encontrada.");
   if(chapter.source_type==="images"){
     const {data:pages,error}=await admin.from("pages").select("id,page_number,original_path,original_sha256").eq("chapter_id",chapter.id).order("page_number");if(error)throw error;
@@ -590,11 +590,25 @@ export async function ingestChapter(chapterId:string){
   }else if(chapter.source_type==="url"){
     if(!chapter.source_url)throw new Error("Capítulo URL sem source_url.");
     const detected=await detectSourceMetadata(chapter.source_url);
+    const galleryPreferredUrl=typeof chapter.source_metadata?.gallery_dl?.preferredUrl==="string"
+      ? chapter.source_metadata.gallery_dl.preferredUrl
+      : null;
+    const effectiveSourceUrl=galleryPreferredUrl&&sourceForGalleryDlUrl(galleryPreferredUrl)
+      ? galleryPreferredUrl
+      : chapter.source_url;
     if(detected.title){const {error}=await admin.from("manga_series").update({title:detected.title,status:"processing"}).eq("id",series.id);if(error)throw error;}
-    const patch:Record<string,unknown>={source_canonical_url:await assertSafeUrl(chapter.source_url),source_metadata:detected};
+    const patch:Record<string,unknown>={
+      source_canonical_url:await assertSafeUrl(effectiveSourceUrl),
+      source_metadata:{
+        ...(detected as any),
+        input_url:chapter.source_url,
+        gallery_dl:chapter.source_metadata?.gallery_dl??null,
+        effective_url:effectiveSourceUrl,
+      },
+    };
     if(detected.chapterNumber!==null)patch.chapter_number=detected.chapterNumber;if(detected.chapterTitle)patch.title=detected.chapterTitle;
     const {error}=await admin.from("chapters").update(patch).eq("id",chapter.id);if(error)throw error;
-    let {buffer,url}=await fetchSafe(chapter.source_url,true);
+    let {buffer,url}=await fetchSafe(effectiveSourceUrl,true);
     const seriesAssets=await detectSeriesAssets(buffer.toString("utf8"),url);
     const assetPatch:Record<string,unknown>={};
     if(seriesAssets.banner)assetPatch.banner_path=await uploadSeriesAsset(admin,series,seriesAssets.banner,url,"banner");
