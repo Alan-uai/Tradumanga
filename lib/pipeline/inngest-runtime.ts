@@ -288,7 +288,6 @@ async function splitCompositeChapterImage(buffer:Buffer){
     .greyscale()
     .raw()
     .toBuffer({resolveWithObject:true});
-  const scale=width/proxy.info.width;
   const rows=proxy.info.height;
   const stride=proxy.info.channels;
   const candidates:number[]=[];
