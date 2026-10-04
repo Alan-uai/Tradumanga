@@ -279,73 +279,104 @@ async function splitCompositeChapterImage(buffer:Buffer){
   const width=meta.width??0,height=meta.height??0;
   if(!width||!height||height/Math.max(1,width)<6)return null;
 
-  // Madara may deliver an entire chapter as one vertically stitched bitmap.
-  // We inspect a small grayscale proxy only to locate page gutters; the
-  // original pixels are extracted at full resolution afterwards.
+  // Madara can expose the whole chapter as one very tall bitmap. Do not
+  // require a pure white gutter: webtoons frequently have colored/illustrated
+  // transitions. Instead, find low-content horizontal seams near the expected
+  // page/chunk positions and always preserve every original pixel.
   const proxyWidth=Math.min(240,width);
   const proxy=await sharp(buffer,{failOn:"warning"})
     .resize({width:proxyWidth,withoutEnlargement:true})
     .greyscale()
     .raw()
     .toBuffer({resolveWithObject:true});
+
   const rows=proxy.info.height;
   const stride=proxy.info.channels;
-  const candidates:number[]=[];
-  let runStart=-1;
-
-  const flushRun=(end:number)=>{
-    if(runStart<0)return;
-    const length=end-runStart;
-    if(length>=4){
-      const y=Math.round((runStart+end-1)/2);
-      candidates.push(Math.round(y*height/rows));
-    }
-    runStart=-1;
-  };
-
+  const density=new Float32Array(rows);
+  const delta=new Float32Array(rows);
   for(let y=0;y<rows;y++){
-    let sum=0,sumSq=0,light=0,dark=0,count=0;
+    let dark=0;
+    let diff=0;
     for(let x=0;x<proxy.info.width;x++){
       const value=proxy.data[(y*proxy.info.width+x)*stride];
-      sum+=value; sumSq+=value*value; count++;
-      if(value>=245)light++;
-      if(value<=12)dark++;
+      if(value<235)dark++;
+      if(y>0){
+        const prev=proxy.data[((y-1)*proxy.info.width+x)*stride];
+        diff+=Math.abs(value-prev);
+      }
     }
-    const mean=sum/Math.max(1,count);
-    const variance=Math.max(0,sumSq/Math.max(1,count)-mean*mean);
-    const std=Math.sqrt(variance);
-    const uniform=std<=18 && Math.max(light,dark)/Math.max(1,count)>=0.94;
-    if(uniform){
-      if(runStart<0)runStart=y;
-    }else{
-      flushRun(y);
-    }
-  }
-  flushRun(rows);
-
-  // A real page is normally at least ~0.55x the image width. Reject
-  // accidental cuts inside panels and merge cuts that are too close.
-  const minSegment=Math.round(width*0.55);
-  const maxSegment=Math.round(width*4.5);
-  const merged:number[]=[];
-  for(const cut of candidates){
-    if(cut<=minSegment||cut>=height-minSegment)continue;
-    if(!merged.length||cut-merged[merged.length-1]>=Math.round(width*0.08)){
-      merged.push(cut);
-    }
+    density[y]=dark/Math.max(1,proxy.info.width);
+    delta[y]=diff/Math.max(1,proxy.info.width*255);
   }
 
-  // If gutters were not detectable, do not blindly chop a genuine long
-  // webtoon page. The importer will keep its original safety failure.
-  if(!merged.length)return null;
+  const integral=(values:Float32Array)=>{
+    const out=new Float64Array(values.length+1);
+    for(let i=0;i<values.length;i++)out[i+1]=out[i]+values[i];
+    return out;
+  };
+  const densitySum=integral(density),deltaSum=integral(delta);
+  const mean=(sum:Float64Array,a:number,b:number)=>sum[Math.max(0,b)]-sum[Math.max(0,a)];
 
-  const boundaries=[0,...merged,height];
+  // A 690px-wide chapter at 8000px height usually contains several logical
+  // pages/panels. Aim for 900-1800px chunks, but let the seam detector move
+  // the cut to the least intrusive row. The exact original pixels are never
+  // resized or discarded during extraction.
+  const target=Math.max(900,Math.min(1600,Math.round(width*1.8)));
+  const minSegment=Math.max(650,Math.round(width*0.9));
+  const maxSegment=Math.max(minSegment+1,Math.round(width*3.2));
+
+  const boundaries=[0];
+  let top=0;
+  while(height-top>maxSegment){
+    const ideal=Math.min(height-maxSegment,top+target);
+    const radius=Math.round(width*0.75);
+    const from=Math.max(top+minSegment,ideal-radius);
+    const to=Math.min(height-minSegment,ideal+radius);
+    if(to<=from)return null;
+
+    let best=from;
+    let bestScore=Number.POSITIVE_INFINITY;
+    for(let y=from;y<=to;y+=2){
+      const window=Math.max(2,Math.round(width*0.035));
+      const a=Math.max(top,y-window);
+      const b=Math.min(height,y+window);
+      const d=mean(densitySum,a,b)/Math.max(1,b-a);
+      const e=mean(deltaSum,a,b)/Math.max(1,b-a);
+      // Empty/low-edge seams are preferred, but no longer mandatory.
+      const score=d*0.7+e*0.3;
+      if(score<bestScore){
+        bestScore=score;
+        best=y;
+      }
+    }
+
+    // Refine around the best candidate at full proxy-row resolution.
+    const refineFrom=Math.max(from,best-8);
+    const refineTo=Math.min(to,best+8);
+    for(let y=refineFrom;y<=refineTo;y++){
+      const window=Math.max(2,Math.round(width*0.02));
+      const a=Math.max(top,y-window);
+      const b=Math.min(height,y+window);
+      const d=mean(densitySum,a,b)/Math.max(1,b-a);
+      const e=mean(deltaSum,a,b)/Math.max(1,b-a);
+      const score=d*0.7+e*0.3;
+      if(score<bestScore){
+        bestScore=score;
+        best=y;
+      }
+    }
+
+    boundaries.push(best);
+    top=best;
+  }
+  boundaries.push(height);
+
   const segments:Buffer[]=[];
   for(let i=0;i<boundaries.length-1;i++){
-    const top=boundaries[i],bottom=boundaries[i+1],segmentHeight=bottom-top;
+    const topY=boundaries[i],bottomY=boundaries[i+1],segmentHeight=bottomY-topY;
     if(segmentHeight<minSegment||segmentHeight>maxSegment)return null;
     const segment=await sharp(buffer,{failOn:"warning"})
-      .extract({left:0,top,width,height:segmentHeight})
+      .extract({left:0,top:topY,width,height:segmentHeight})
       .png()
       .toBuffer();
     segments.push(segment);
@@ -353,7 +384,6 @@ async function splitCompositeChapterImage(buffer:Buffer){
 
   return segments.length>=2?segments:null;
 }
-
 async function inspectImageCandidates(candidates:ImageCandidate[],referer:string){
   const results:InspectedImage[]=[];
   let cursor=0;
