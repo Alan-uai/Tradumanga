@@ -8,7 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
-import { editPageWithNanoBanana2 } from "@/lib/pipeline/gemini";
+import { editPageWithNanoBanana2, editPageWithQwenImageEditFallback } from "@/lib/pipeline/gemini";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
@@ -803,13 +803,37 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
     return {translated:png,mask,qa:{passed:true,changedInsideMask:0,changedOutsideMask:0,width:w,height:h,model:"none"}};
   }
 
-  const rendered=await editPageWithNanoBanana2({
-    image:original,
-    mimeType:"image/png",
-    width:w,
-    height:h,
-    edits,
-  });
+  let rendered:Buffer;
+  try{
+    rendered=await editPageWithNanoBanana2({
+      image:original,
+      mimeType:"image/png",
+      width:w,
+      height:h,
+      edits,
+    });
+  }catch(nanoError){
+    if(!process.env.QWEN_IMAGE_EDIT_URL?.trim())throw nanoError;
+    console.warn(JSON.stringify({
+      event:"nano_render_fallback",
+      primary:"gemini-3.1-flash-image",
+      fallback:"Qwen-Image-Edit-2511",
+      error:nanoError instanceof Error?nanoError.message:String(nanoError),
+    }));
+    try{
+      rendered=await editPageWithQwenImageEditFallback({
+        image:original,
+        mimeType:"image/png",
+        width:w,
+        height:h,
+        edits,
+      });
+    }catch(fallbackError){
+      throw new Error(
+        `Nano Banana 2 falhou e o fallback Qwen-Image-Edit-2511 também falhou. Nano: ${nanoError instanceof Error?nanoError.message:String(nanoError)}. Qwen: ${fallbackError instanceof Error?fallbackError.message:String(fallbackError)}`,
+      );
+    }
+  }
   const normalized=await sharp(rendered,{failOn:"warning"})
     .resize({width:w,height:h,fit:"fill"})
     .png().toBuffer();
@@ -836,7 +860,7 @@ async function inspectNanoOutput(original:Buffer,translated:Buffer,mask:Buffer){
     if(changed&&m.data[p]===0)outside++;
   }
   if(outside)console.warn(JSON.stringify({event:"nano_render_changed_outside_mask",changedOutsideMask:outside,changedInsideMask:inside}));
-  return{passed:true,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height,model:"gemini-3.1-flash-image"};
+  return{passed:true,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height,model:process.env.QWEN_IMAGE_EDIT_URL?.trim()?"gemini-3.1-flash-image|Qwen-Image-Edit-2511":"gemini-3.1-flash-image"};
 }
 export async function verifyPixelIntegrity(original:Buffer,translated:Buffer,mask:Buffer){
   const[a,b,m]=await Promise.all([sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true})]);
