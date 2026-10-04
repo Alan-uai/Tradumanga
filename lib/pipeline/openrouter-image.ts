@@ -21,7 +21,7 @@ type OpenRouterImageModel = {
     input_modalities?: string[];
     output_modalities?: string[];
   };
-  pricing?: Record<string, string>;
+  pricing?: Record<string, string | number>;
 };
 
 const DEFAULT_MODEL = "google/gemini-3.1-flash-image";
