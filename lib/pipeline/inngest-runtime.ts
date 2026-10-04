@@ -269,6 +269,92 @@ function imageFamily(url:string){
   }catch{return url;}
 }
 
+function isCompositeCandidate(item:InspectedImage){
+  const ratio=item.height/Math.max(1,item.width);
+  return ratio>=6 && item.height>=6000 && item.width>=500;
+}
+
+async function splitCompositeChapterImage(buffer:Buffer){
+  const meta=await sharp(buffer,{failOn:"warning"}).metadata();
+  const width=meta.width??0,height=meta.height??0;
+  if(!width||!height||height/Math.max(1,width)<6)return null;
+
+  // Madara may deliver an entire chapter as one vertically stitched bitmap.
+  // We inspect a small grayscale proxy only to locate page gutters; the
+  // original pixels are extracted at full resolution afterwards.
+  const proxyWidth=Math.min(240,width);
+  const proxy=await sharp(buffer,{failOn:"warning"})
+    .resize({width:proxyWidth,withoutEnlargement:true})
+    .greyscale()
+    .raw()
+    .toBuffer({resolveWithObject:true});
+  const scale=width/proxy.info.width;
+  const rows=proxy.info.height;
+  const stride=proxy.info.channels;
+  const candidates:number[]=[];
+  let runStart=-1;
+
+  const flushRun=(end:number)=>{
+    if(runStart<0)return;
+    const length=end-runStart;
+    if(length>=4){
+      const y=Math.round((runStart+end-1)/2);
+      candidates.push(Math.round(y*height/rows));
+    }
+    runStart=-1;
+  };
+
+  for(let y=0;y<rows;y++){
+    let sum=0,sumSq=0,light=0,dark=0,count=0;
+    for(let x=0;x<proxy.info.width;x++){
+      const value=proxy.data[(y*proxy.info.width+x)*stride];
+      sum+=value; sumSq+=value*value; count++;
+      if(value>=245)light++;
+      if(value<=12)dark++;
+    }
+    const mean=sum/Math.max(1,count);
+    const variance=Math.max(0,sumSq/Math.max(1,count)-mean*mean);
+    const std=Math.sqrt(variance);
+    const uniform=std<=18 && Math.max(light,dark)/Math.max(1,count)>=0.94;
+    if(uniform){
+      if(runStart<0)runStart=y;
+    }else{
+      flushRun(y);
+    }
+  }
+  flushRun(rows);
+
+  // A real page is normally at least ~0.55x the image width. Reject
+  // accidental cuts inside panels and merge cuts that are too close.
+  const minSegment=Math.round(width*0.55);
+  const maxSegment=Math.round(width*4.5);
+  const merged:number[]=[];
+  for(const cut of candidates){
+    if(cut<=minSegment||cut>=height-minSegment)continue;
+    if(!merged.length||cut-merged[merged.length-1]>=Math.round(width*0.08)){
+      merged.push(cut);
+    }
+  }
+
+  // If gutters were not detectable, do not blindly chop a genuine long
+  // webtoon page. The importer will keep its original safety failure.
+  if(!merged.length)return null;
+
+  const boundaries=[0,...merged,height];
+  const segments:Buffer[]=[];
+  for(let i=0;i<boundaries.length-1;i++){
+    const top=boundaries[i],bottom=boundaries[i+1],segmentHeight=bottom-top;
+    if(segmentHeight<minSegment||segmentHeight>maxSegment)return null;
+    const segment=await sharp(buffer,{failOn:"warning"})
+      .extract({left:0,top,width,height:segmentHeight})
+      .png()
+      .toBuffer();
+    segments.push(segment);
+  }
+
+  return segments.length>=2?segments:null;
+}
+
 async function inspectImageCandidates(candidates:ImageCandidate[],referer:string){
   const results:InspectedImage[]=[];
   let cursor=0;
@@ -465,7 +551,29 @@ export async function ingestChapter(chapterId:string){
     const inspected=await inspectImageCandidates(candidates,url);
     const selection=selectChapterImages(inspected);
     if(!selection.selected.length)throw new Error("Nenhuma imagem de página do capítulo foi identificada.");
-    if(selection.selected.length===1){
+
+    // Some Madara installations store the complete chapter as one very tall
+    // bitmap. It is still a valid chapter source, but Nano Banana 2 cannot
+    // reliably edit an arbitrary 1:12+ canvas in one request. Split it at
+    // detected page gutters, translate each segment independently, and keep
+    // the segments as ordered chapter pages. No pixels are discarded.
+    let compositeSegments:Buffer[]|null=null;
+    if(selection.selected.length===1 && isCompositeCandidate(selection.selected[0])){
+      const only=selection.selected[0];
+      const composite=await fetchSafe(only.url,false,{referer:url});
+      if(!composite.contentType.startsWith("image/"))
+        throw new Error(`A imagem composta selecionada não retornou imagem: ${only.url}`);
+      compositeSegments=await splitCompositeChapterImage(composite.buffer);
+      if(!compositeSegments?.length){
+        throw new Error(`A fonte entregou uma imagem composta (${only.width}x${only.height}), mas não foi possível identificar com segurança as divisões entre páginas.`);
+      }
+      console.info(JSON.stringify({
+        event:"madara_composite_split",
+        width:only.width,
+        height:only.height,
+        segment_count:compositeSegments.length,
+      }));
+    }else if(selection.selected.length===1){
       const only=selection.selected[0];
       throw new Error(`A detecção encontrou somente uma imagem ambígua (${only.width}x${only.height}); importação abortada para evitar logo/banner/capa.`);
     }
@@ -486,14 +594,23 @@ export async function ingestChapter(chapterId:string){
     }
 
     let total=0,count=0;
-    for(const item of selection.selected){
-      const r=await fetchSafe(item.url,false,{referer:url});
-      if(!r.contentType.startsWith("image/"))throw new Error(`A página selecionada não retornou imagem: ${item.url}`);
-      total+=r.buffer.byteLength;
-      if(total>MAX_HTML_TOTAL_BYTES)throw new Error("O conjunto de páginas excede o limite de tamanho configurado.");
-      await uploadPage(admin,series,{...chapter,chapter_number:detected.chapterNumber??chapter.chapter_number},await sharp(r.buffer).png().toBuffer(),++count);
+    if(compositeSegments?.length){
+      for(const segment of compositeSegments){
+        total+=segment.byteLength;
+        if(total>MAX_HTML_TOTAL_BYTES)throw new Error("O conjunto de páginas excede o limite de tamanho configurado.");
+        await uploadPage(admin,series,{...chapter,chapter_number:detected.chapterNumber??chapter.chapter_number},segment,++count);
+      }
+    }else{
+      for(const item of selection.selected){
+        const r=await fetchSafe(item.url,false,{referer:url});
+        if(!r.contentType.startsWith("image/"))throw new Error(`A página selecionada não retornou imagem: ${item.url}`);
+        total+=r.buffer.byteLength;
+        if(total>MAX_HTML_TOTAL_BYTES)throw new Error("O conjunto de páginas excede o limite de tamanho configurado.");
+        await uploadPage(admin,series,{...chapter,chapter_number:detected.chapterNumber??chapter.chapter_number},await sharp(r.buffer).png().toBuffer(),++count);
+      }
     }
-    if(count!==selection.selected.length)throw new Error(`A detecção selecionou ${selection.selected.length} páginas, mas somente ${count} foram baixadas.`);
+    const importedPageCount=compositeSegments?.length??selection.selected.length;
+    if(count!==importedPageCount)throw new Error(`A detecção selecionou ${importedPageCount} páginas, mas somente ${count} foram baixadas.`);
 
     await admin.from("chapters").update({
       source_metadata:{
@@ -503,7 +620,7 @@ export async function ingestChapter(chapterId:string){
           reason:selection.reason,
           candidate_count:candidates.length,
           inspected_count:inspected.length,
-          selected_page_count:selection.selected.length,
+          selected_page_count:compositeSegments?.length??selection.selected.length,\n          composite_split:compositeSegments?true:false,
           selected_family:selection.family??null,
           series_assets:{logo:seriesAssets.logo?.url??null,banner:seriesAssets.banner?.url??null,candidate_count:seriesAssets.candidateCount},
           source_variant:url===chapter.source_url?"canonical":"style=list",
