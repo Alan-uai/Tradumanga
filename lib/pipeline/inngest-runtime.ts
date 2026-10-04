@@ -618,11 +618,13 @@ export async function ingestChapter(chapterId:string){
         listUrl.searchParams.set("style","list");
         const listResponse=await fetchSafe(listUrl.toString(),true);
         const listCandidates=imageUrls(listResponse.buffer.toString("utf8"),listResponse.url);
-        // The list view is authoritative for Madara. Even if the initial
-        // paged HTML yielded first/last images, replace it whenever the list
-        // view exposes more pages. Embedded JS arrays are included by
-        // imageUrls(), so this also covers child themes that lazy-load pages.
-        if(listCandidates.length>candidates.length){
+        // The list reader is authoritative for Madara when it exposes
+        // multiple chapter pages. The paged reader intentionally contains
+        // only the currently visible page in several child themes.
+        // Do not compare counts with the paged HTML: that can contain a
+        // misleading first/last image pair while the list reader contains
+        // the actual ordered chapter.
+        if(listCandidates.length>=2){
           buffer=listResponse.buffer;
           url=listResponse.url;
           candidates=listCandidates;
@@ -806,37 +808,13 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
     return {translated:png,mask,qa:{passed:true,changedInsideMask:0,changedOutsideMask:0,width:w,height:h,model:"none"}};
   }
 
-  let rendered:Buffer;
-  try{
-    rendered=await editPageWithNanoBanana2({
-      image:original,
-      mimeType:"image/png",
-      width:w,
-      height:h,
-      edits,
-    });
-  }catch(nanoError){
-    if(!process.env.QWEN_IMAGE_EDIT_URL?.trim())throw nanoError;
-    console.warn(JSON.stringify({
-      event:"nano_render_fallback",
-      primary:"gemini-3.1-flash-image",
-      fallback:"Qwen-Image-Edit-2511",
-      error:nanoError instanceof Error?nanoError.message:String(nanoError),
-    }));
-    try{
-      rendered=await editPageWithQwenImageEditFallback({
-        image:original,
-        mimeType:"image/png",
-        width:w,
-        height:h,
-        edits,
-      });
-    }catch(fallbackError){
-      throw new Error(
-        `Nano Banana 2 falhou e o fallback Qwen-Image-Edit-2511 também falhou. Nano: ${nanoError instanceof Error?nanoError.message:String(nanoError)}. Qwen: ${fallbackError instanceof Error?fallbackError.message:String(fallbackError)}`,
-      );
-    }
-  }
+  const rendered=await editPageWithQwenImageEdit({
+    image:original,
+    mimeType:"image/png",
+    width:w,
+    height:h,
+    edits,
+  });
   const normalized=await sharp(rendered,{failOn:"warning"})
     .resize({width:w,height:h,fit:"fill"})
     .png().toBuffer();
@@ -855,7 +833,7 @@ async function inspectNanoOutput(original:Buffer,translated:Buffer,mask:Buffer){
     sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true}),
   ]);
   if(a.info.width!==b.info.width||a.info.height!==b.info.height||m.info.width!==a.info.width||m.info.height!==a.info.height)
-    throw new Error("QA Nano Banana 2: dimensões incompatíveis.");
+    throw new Error("QA Qwen Image Edit: dimensões incompatíveis.");
   let outside=0,inside=0;
   for(let i=0,p=0;i<a.data.length;i+=a.info.channels,p++){
     const changed=a.data[i]!==b.data[i]||a.data[i+1]!==b.data[i+1]||a.data[i+2]!==b.data[i+2];
@@ -863,7 +841,7 @@ async function inspectNanoOutput(original:Buffer,translated:Buffer,mask:Buffer){
     if(changed&&m.data[p]===0)outside++;
   }
   if(outside)console.warn(JSON.stringify({event:"nano_render_changed_outside_mask",changedOutsideMask:outside,changedInsideMask:inside}));
-  return{passed:true,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height,model:process.env.QWEN_IMAGE_EDIT_URL?.trim()?"gemini-3.1-flash-image|Qwen-Image-Edit-2511":"gemini-3.1-flash-image"};
+  return{passed:true,changedInsideMask:inside,changedOutsideMask:outside,width:a.info.width,height:a.info.height,model:"Qwen-Image-Edit-2511"};
 }
 export async function verifyPixelIntegrity(original:Buffer,translated:Buffer,mask:Buffer){
   const[a,b,m]=await Promise.all([sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true})]);
