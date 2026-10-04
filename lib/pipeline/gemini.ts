@@ -143,6 +143,10 @@ IMPORTANTE:
 - Descreva a cena e os elementos necessários para que outra etapa compreenda o contexto.
 - Identifique texto vertical/horizontal, onomatopeias, caixas de narração e falas.
 - Forneça polígonos/bounding boxes em coordenadas relativas à imagem quando possível.
+- Quando conseguir, forneça as linhas de texto como quadriláteros individuais, na ordem de leitura.
+- Estime orientação, alinhamento, tamanho de fonte, peso, cor do texto, cor/traço de contorno e espaçamento.
+- Diferencie texto integrado à arte de texto dentro de balões.
+- O polígono de limpeza deve cobrir somente os pixels do texto, não o balão inteiro e não a arte ao redor.
 
 Retorne SOMENTE JSON válido no formato:
 {
@@ -165,7 +169,14 @@ Retorne SOMENTE JSON válido no formato:
         "border_width": 1,
         "shape": "oval",
         "text_align": "center",
-        "font_family": "sans"
+        "font_family": "sans",
+        "font_size": 0,
+        "font_weight": 400,
+        "text_color": "#111111",
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 0,
+        "line_spacing": 1.2,
+        "letter_spacing": 0
       }
     }
   ],
