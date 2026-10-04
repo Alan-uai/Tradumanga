@@ -250,12 +250,18 @@ function imageUrls(html:string,base:string){
   }
 
   // Some themes JSON-escape the slashes inside chapter_images.
-  // https:\/\/cdn.example/page_0002.webp
-  const escapedImageRe=/(?:https?:)?\\\\/\\\\/[^"'\\s<>\\]+(?:\\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\\?[^"'\\s<>\\]*)?|[?#][^"'\\s<>\\]*)/gi;
-  for(const m of html.matchAll(escapedImageRe)){
-    const raw=m[0].replace(/\\\\\//g,"/");
-    const value=raw.startsWith("//")?"https:"+raw:raw;
-    addImageCandidate(out,seen,value,base,"reader escaped-js",orderRef);
+  // Avoid a slash-heavy regex here because escaped JavaScript URLs are easy
+  // to make syntactically invalid in the TypeScript parser. Normalize the
+  // entire HTML fragment first, then reuse the safe absolute-URL matcher.
+  const escapedBlock=html
+    .replace(/\\\\\//g,"/")
+    .replace(/\\u002f/gi,"/")
+    .replace(/\\u003a/gi,":")
+    .replace(/\\u003f/gi,"?")
+    .replace(/\\u003d/gi,"=")
+    .replace(/&amp;/gi,"&");
+  for(const m of escapedBlock.matchAll(directImageRe)){
+    addImageCandidate(out,seen,m[0],base,"reader normalized-js",orderRef);
     if(out.length>=MAX_HTML_IMAGES)break;
   }
 
