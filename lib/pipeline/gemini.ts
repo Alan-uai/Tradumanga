@@ -258,6 +258,8 @@ export async function translatePageWithGemini(input: {
     preferred_translation: string;
     notes?: string | null;
   }>;
+  imageBase64?: string;
+  mimeType?: string;
 }): Promise<GeminiJson> {
   const prompt = `Você é o tradutor contextual do Tradumanga.
 Traduza somente os textos fornecidos, do idioma de origem para pt-BR.
@@ -276,6 +278,12 @@ Não invente falas.
 Não remova informação.
 Não explique a tradução fora do JSON.
 Não altere bubble_index.
+- Preserve nomes próprios, honoríficos e termos recorrentes conforme o contexto/glossário.
+- Não faça tradução palavra por palavra quando isso produzir português artificial.
+- Preserve intenção, humor, agressividade, formalidade e subtexto.
+- Se a fala for curta, não a expanda desnecessariamente.
+- Retorne quebras de linha adequadas ao espaço disponível; não use uma única linha excessivamente longa.
+- Se o texto original estiver ambíguo, escolha a interpretação sustentada pelo contexto, sem inventar informação.
 
 Retorne SOMENTE JSON válido:
 {
@@ -301,8 +309,12 @@ ${JSON.stringify(input.glossary)}
 Balões:
 ${JSON.stringify(input.bubbles)}`;
 
+  const parts: Array<Record<string, unknown>> = [{ text: prompt }];
+  if (input.imageBase64) {
+    parts.push({ inlineData: { mimeType: input.mimeType || "image/jpeg", data: input.imageBase64.replace(/^data:[^,]+,/, "") } });
+  }
   return generateJson("translate_page", {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    contents: [{ role: "user", parts }],
     config: { responseMimeType: "application/json" },
   });
 }

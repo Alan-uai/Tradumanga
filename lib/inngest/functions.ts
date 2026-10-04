@@ -181,7 +181,7 @@ export const translatePage = inngest.createFunction(
     const pageId = event.data.pageId;
     const result = await step.run("translate-with-gemini", async () => {
       const admin = createAdminClient();
-      const { data: page, error } = await admin.from("pages").select("id,chapter_id").eq("id", pageId).single();
+      const { data: page, error } = await admin.from("pages").select("id,chapter_id,original_path").eq("id", pageId).single();
       if (error || !page) throw error || new Error("Página não encontrada.");
       const { data: chapter } = await admin.from("chapters").select("context_json,series_id").eq("id", page.chapter_id).single();
       if (!chapter) throw new Error("Capítulo não encontrado.");
@@ -194,6 +194,12 @@ export const translatePage = inngest.createFunction(
         .select("source_term,preferred_translation,notes").eq("series_id", series.id);
       if (ge) throw ge;
 
+      const { data: pageImage, error: pageImageError } = await admin.storage
+        .from("manga-pages")
+        .download(page.original_path);
+      if (pageImageError || !pageImage) throw pageImageError || new Error("Não foi possível carregar a imagem para tradução contextual.");
+      const imageBuffer = Buffer.from(await pageImage.arrayBuffer());
+
       await admin.from("pages").update({ status: "translating", error_message: null }).eq("id", pageId);
       const translated = await translatePageWithGemini({
         sourceLanguage: series.source_language,
@@ -205,6 +211,8 @@ export const translatePage = inngest.createFunction(
           style_json:b.style_json && typeof b.style_json==="object" ? b.style_json : {},
         })),
         glossary: glossary ?? [],
+        imageBase64: imageBuffer.toString("base64"),
+        mimeType: pageImage.type || "image/jpeg",
       });
 
       for (const item of Array.isArray(translated.translations) ? translated.translations : []) {
@@ -249,7 +257,7 @@ export const renderPage = inngest.createFunction(
       const { data: series } = await admin.from("manga_series").select("id,owner_id,anonymous_session_id").eq("id", chapter.series_id).single();
       if (!series) throw new Error("Obra não encontrada.");
       const { data: bubbles, error: be } = await admin.from("speech_bubbles")
-        .select("polygon,bbox,source_text,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
+        .select("bubble_index,polygon,bbox,source_text,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
       if (be) throw be;
       const { data: file, error: fe } = await admin.storage.from("manga-pages").download(page.original_path);
       if (fe || !file) throw fe || new Error("Não foi possível baixar o original.");
@@ -262,6 +270,7 @@ export const renderPage = inngest.createFunction(
         source_text:b.source_text,
         translated_text:b.translated_text,
         style_json:b.style_json,
+        lines:Array.isArray(b.style_json?.lines) ? b.style_json.lines : [],
       })));
       if(!rendered.qa.passed) throw new Error(`QA de camadas falhou: ${rendered.qa.changedOutsideMask} pixels alterados fora das regiões autorizadas.`);
 
