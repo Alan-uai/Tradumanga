@@ -123,7 +123,7 @@ type InspectedImage = ImageCandidate & {
 };
 
 const IMAGE_ATTR_RE=/(?:src|data-src|data-original|data-lazy-src|data-full-url|data-image-url|data-url|srcset|data-srcset)=["']([^"']+)["']/gi;
-const STRONG_READER_RE=/(?:wp-manga-chapter-img|reading-content|page-break|chapter-images|chaptercontent|readerarea|read-content|read-content|manga-reader|chapter-img|chapter-image)/i;
+const STRONG_READER_RE=/(?:wp-manga-chapter-img|reading-content|page-break|chapter-images|chaptercontent|readerarea|read-content|manga-reader|chapter-img|chapter-image|embedded-chapter-images)/i;
 const BAD_RE=/(?:logo|banner|header|footer|avatar|thumbnail|thumb|cover|icon|favicon|social|related|recommended|author|profile|advert|sidebar|menu|loading|placeholder)/i;
 
 function splitSrcset(value:string){
@@ -157,6 +157,40 @@ function addImageCandidate(out:ImageCandidate[],seen:Set<string>,raw:string,base
  * generic <img> discovery so site chrome can never win merely by appearing
  * earlier in the HTML.
  */
+function embeddedChapterImageUrls(html:string){
+  const out:string[]=[];
+  const assignmentRe=/(?:(?:var|let|const)\s+)?(?:chapter_preloaded_images|chapter_images)\s*=\s*/gi;
+  for(const match of html.matchAll(assignmentRe)){
+    const start=(match.index??0)+match[0].length;
+    const open=html.indexOf("[",start);
+    if(open<0)continue;
+    let depth=0,quote="",escaped=false,end=-1;
+    for(let i=open;i<html.length;i++){
+      const ch=html[i];
+      if(quote){
+        if(escaped){escaped=false;continue;}
+        if(ch==="\\"){escaped=true;continue;}
+        if(ch===quote)quote="";
+        continue;
+      }
+      if(ch==='"'||ch==="'"){quote=ch;continue;}
+      if(ch==="[")depth++;
+      else if(ch==="]"){
+        depth--;
+        if(depth===0){end=i;break;}
+      }
+    }
+    if(end<0)continue;
+    const block=html.slice(open,end+1).replace(/\\\//g,"/");
+    const urlRe=/(?:"|')((?:https?:)?\/\/[^"'\\s<>]+)(?:"|')/gi;
+    for(const m of block.matchAll(urlRe)){
+      const value=m[1].startsWith("//")?"https:"+m[1]:m[1];
+      if(!out.includes(value))out.push(value);
+    }
+  }
+  return out;
+}
+
 function imageUrls(html:string,base:string){
   const out:ImageCandidate[]=[],seen=new Set<string>(),orderRef={value:0};
 
@@ -200,6 +234,14 @@ function imageUrls(html:string,base:string){
   // Only after all reader-specific selectors are exhausted do we inspect
   // generic images. These remain candidates, but receive no reader bonus.
   if(out.length<2)pushTags(allTags,false);
+
+  // Madara child themes frequently keep the complete chapter in a JS array
+  // while the paged HTML contains only the first/last visible page.
+  // Prefer these embedded chapter arrays over generic image discovery.
+  for(const embedded of embeddedChapterImageUrls(html)){
+    addImageCandidate(out,seen,embedded,base,"reader embedded-chapter-images",orderRef);
+    if(out.length>=MAX_HTML_IMAGES)break;
+  }
 
   // URLs embedded in JS are a common Madara lazy/paged-reader fallback.
   const directImageRe=/https?:\/\/[^"'\s<>\\]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\?[^"'\s<>\\]*)?/gi;
@@ -393,6 +435,10 @@ export async function ingestChapter(chapterId:string){
         listUrl.searchParams.set("style","list");
         const listResponse=await fetchSafe(listUrl.toString(),true);
         const listCandidates=imageUrls(listResponse.buffer.toString("utf8"),listResponse.url);
+        // The list view is authoritative for Madara. Even if the initial
+        // paged HTML yielded first/last images, replace it whenever the list
+        // view exposes more pages. Embedded JS arrays are included by
+        // imageUrls(), so this also covers child themes that lazy-load pages.
         if(listCandidates.length>candidates.length){
           buffer=listResponse.buffer;
           url=listResponse.url;
