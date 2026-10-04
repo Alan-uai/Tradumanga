@@ -163,31 +163,29 @@ function embeddedChapterImageUrls(html:string){
   const add=(raw:string)=>{
     try{
       let value=raw.trim()
-        .replace(/\\\\\//g,"/")
+        .replace(/\\\//g,"/")
         .replace(/\\u002f/gi,"/")
         .replace(/\\u0026/gi,"&")
         .replace(/\\u003f/gi,"?")
         .replace(/\\u003d/gi,"=")
         .replace(/&amp;/gi,"&");
       if(value.startsWith("//"))value="https:"+value;
-      if(!/^https?:\\/\\//i.test(value))return;
+      if(!/^https?:/i.test(value))return;
       if(!seen.has(value)){seen.add(value);out.push(value);}
     }catch{}
   };
   const markerRe=/(?:chapter_preloaded_images|chapter_images|chapterImages|chapter_images_data|chapterImagesData)/gi;
+  const urlRe=/https?:[^"'<>\\s]+/gi;
   for(const marker of html.matchAll(markerRe)){
     const center=marker.index??0;
     const start=Math.max(0,center-1200);
     const end=Math.min(html.length,center+250000);
     const block=html.slice(start,end);
-    const quotedUrlRe=/(["'])(https?:\\/\\/|https?:\\\\/\\\\/|\\/\\/)([^"'<>\\s\\]+)\\1/gi;
-    for(const m of block.matchAll(quotedUrlRe))add((m[2]+m[3]).replace(/\\\\\//g,"/").replace(/\\\//g,"/"));
-    const escapedUrlRe=/(?:https?:)?\\\\/\\\\/[^"'<>\\s\\]+/gi;
-    for(const m of block.matchAll(escapedUrlRe))add(m[0]);
-    const directUrlRe=/(?:https?:)?\\/\\/[^"'<>\\s\\]+/gi;
-    for(const m of block.matchAll(directUrlRe)){
-      const value=m[0].startsWith("//")?"https:"+m[0]:m[0];
-      if(/\\.(?:jpe?g|png|webp|gif|bmp|avif)(?:[?#]|$)/i.test(value)||/chapter|page[_-]?\\d+/i.test(value))add(value);
+    for(const m of block.matchAll(urlRe)){
+      const value=m[0].replace(/\\\//g,"/");
+      if(/\\.(?:jpe?g|png|webp|gif|bmp|avif)(?:[?#]|$)/i.test(value)||/chapter|page[_-]?\\d+/i.test(value)){
+        add(value);
+      }
     }
   }
   return out;
