@@ -182,9 +182,9 @@ function embeddedChapterImageUrls(html:string){
     }
     if(end<0)continue;
     const block=html.slice(open,end+1).replace(/\\\//g,"/");
-    const urlRe=/(?:"|')((?:https?:)?\/\/[^"'\\s<>]+)(?:"|')/gi;
+    const urlRe=/(["'])((?:https?:)?\/\/[^"'\s<>]+)\1/gi;
     for(const m of block.matchAll(urlRe)){
-      const value=m[1].startsWith("//")?"https:"+m[1]:m[1];
+      const value=m[2].startsWith("//")?"https:"+m[2]:m[2];
       if(!out.includes(value))out.push(value);
     }
   }
