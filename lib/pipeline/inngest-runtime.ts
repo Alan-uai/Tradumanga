@@ -841,7 +841,7 @@ async function inspectRenderedOutput(original:Buffer,translated:Buffer,mask:Buff
   const[a,b,m]=await Promise.all([
     sharp(original).removeAlpha().raw().toBuffer({resolveWithObject:true}),
     sharp(translated).removeAlpha().raw().toBuffer({resolveWithObject:true}),
-    sharp(mask).greyscale().raw().toBuffer({resolveWithObject:true}),
+    sharp(mask).removeAlpha().greyscale().raw().toBuffer({resolveWithObject:true}),
   ]);
   if(a.info.width!==b.info.width||a.info.height!==b.info.height||m.info.width!==a.info.width||m.info.height!==a.info.height)throw new Error("QA render: dimensões incompatíveis.");
   let outside=0,inside=0;
