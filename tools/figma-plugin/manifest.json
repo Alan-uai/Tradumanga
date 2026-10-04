@@ -1,0 +1,10 @@
+{
+  "name": "Tradumanga Bubble Studio",
+  "id": "1516574812345678901",
+  "api": "1.0.0",
+  "editorType": ["figma"],
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "documentAccess": "dynamic-page",
+  "networkAccess": { "allowedDomains": ["https://*.vercel.app"] }
+}
