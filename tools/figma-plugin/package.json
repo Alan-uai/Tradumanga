@@ -1,0 +1,10 @@
+{
+  "name": "tradumanga-figma-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": { "build": "tsc && node build.mjs", "typecheck": "tsc --noEmit" },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.121.0",
+    "typescript": "^5.9.0"
+  }
+}
