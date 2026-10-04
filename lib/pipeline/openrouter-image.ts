@@ -14,8 +14,20 @@ type RenderResult = {
   costUsd: number | null;
 };
 
+type OpenRouterImageModel = {
+  id: string;
+  name?: string;
+  architecture?: {
+    input_modalities?: string[];
+    output_modalities?: string[];
+  };
+  pricing?: Record<string, string>;
+};
+
 const DEFAULT_MODEL = "google/gemini-3.1-flash-image";
 const MAX_ATTEMPTS = 3;
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedFreeModels: { expiresAt: number; models: string[] } | null = null;
 
 function sleep(ms:number){ return new Promise((resolve)=>setTimeout(resolve,ms)); }
 
@@ -34,9 +46,9 @@ function normalizePoint(point:unknown,width:number,height:number){
   const p=point as Record<string,unknown>;
   const x=Number(p.x),y=Number(p.y);
   if(!Number.isFinite(x)||!Number.isFinite(y))return null;
-  // Gemini may return either normalized [0,1] coordinates or pixel coordinates.
-  const px=Math.abs(x)<=1.01 && Math.abs(y)<=1.01 ? x*width : x;
-  const py=Math.abs(x)<=1.01 && Math.abs(y)<=1.01 ? y*height : y;
+  const normalized=Math.abs(x)<=1.01 && Math.abs(y)<=1.01;
+  const px=normalized ? x*width : x;
+  const py=normalized ? y*height : y;
   return {x:clamp(px,0,width),y:clamp(py,0,height)};
 }
 
@@ -46,10 +58,12 @@ function bubbleDescription(b:OpenRouterRenderBubble,width:number,height:number,i
     : [];
   const bbox=b.bbox&&typeof b.bbox==="object" ? b.bbox as Record<string,unknown> : {};
   const x=Number(bbox.x),y=Number(bbox.y),bw=Number(bbox.width),bh=Number(bbox.height);
-  const bx=Number.isFinite(x)?(Math.abs(x)<=1.01?x*width:x):0;
-  const by=Number.isFinite(y)?(Math.abs(y)<=1.01?y*height:y):0;
-  const bwidth=Number.isFinite(bw)?(Math.abs(bw)<=1.01?bw*width:bw):0;
-  const bheight=Number.isFinite(bh)?(Math.abs(bh)<=1.01?bh*height:bh):0;
+  const normalizedXY=Number.isFinite(x)&&Number.isFinite(y)&&Math.abs(x)<=1.01&&Math.abs(y)<=1.01;
+  const normalizedSize=Number.isFinite(bw)&&Number.isFinite(bh)&&Math.abs(bw)<=1.01&&Math.abs(bh)<=1.01;
+  const bx=Number.isFinite(x)?(normalizedXY?x*width:x):0;
+  const by=Number.isFinite(y)?(normalizedXY?y*height:y):0;
+  const bwidth=Number.isFinite(bw)?(normalizedSize?bw*width:bw):0;
+  const bheight=Number.isFinite(bh)?(normalizedSize?bh*height:bh):0;
   const style=b.style_json??{};
   return {
     index,
@@ -93,6 +107,81 @@ TRANSLATION IS ALREADY FINAL. Do not translate it again and do not paraphrase it
 Return the edited image only. `;
 }
 
+function isActuallyFreeImageEditor(model:OpenRouterImageModel){
+  const input=model.architecture?.input_modalities??[];
+  const output=model.architecture?.output_modalities??[];
+  const pricing=model.pricing??{};
+  const hasImageInput=input.includes("image");
+  const hasImageOutput=output.includes("image");
+  if(!hasImageInput || !hasImageOutput) return false;
+
+  // "Free" here means OpenRouter reports zero cost for every image/text
+  // input/output pricing field exposed for the model. A zero prompt price
+  // alone is not enough because many paid image models have free text input.
+  const relevant=["prompt","completion","image","image_token","image_output"];
+  return relevant.every((key)=>{
+    const value=pricing[key];
+    return value===undefined || value==="0" || value===0;
+  }) && (pricing.image_output==="0" || pricing.image_output===0 || pricing.image==="0" || pricing.image===0);
+}
+
+async function discoverFreeImageEditors(key:string){
+  const now=Date.now();
+  if(cachedFreeModels && cachedFreeModels.expiresAt>now) return cachedFreeModels.models;
+
+  const response=await fetch("https://openrouter.ai/api/v1/models?output_modalities=image",{
+    headers:{
+      Authorization:`Bearer ${key}`,
+      "HTTP-Referer":process.env.OPENROUTER_SITE_URL||"https://tradumanga.vercel.app",
+      "X-Title":"Tradumanga",
+    },
+    signal:AbortSignal.timeout(15000),
+  });
+  if(!response.ok){
+    throw new Error(`Não foi possível consultar os modelos de imagem gratuitos do OpenRouter: HTTP ${response.status}.`);
+  }
+
+  const payload=await response.json() as {data?:OpenRouterImageModel[]};
+  const models=(payload.data??[])
+    .filter(isActuallyFreeImageEditor)
+    .map((model)=>model.id)
+    .filter(Boolean);
+
+  cachedFreeModels={expiresAt:now+MODEL_CACHE_TTL_MS,models};
+  console.info(JSON.stringify({
+    event:"openrouter_free_image_models_discovered",
+    count:models.length,
+    models,
+  }));
+  return models;
+}
+
+function configuredModels(){
+  return (process.env.OPENROUTER_IMAGE_MODELS||"")
+    .split(",")
+    .map((value)=>value.trim())
+    .filter(Boolean);
+}
+
+async function resolveModels(key:string){
+  const explicit=configuredModels();
+  const discovered=await discoverFreeImageEditors(key);
+
+  // Explicit models are only accepted when they are also discovered as
+  // genuinely free image editors. This prevents accidentally charging the
+  // account through a stale environment variable.
+  const ordered=[...explicit,...discovered].filter((model,index,array)=>array.indexOf(model)===index);
+  const free=ordered.filter((model)=>discovered.includes(model));
+
+  if(free.length===0){
+    throw new Error(
+      "O OpenRouter não disponibilizou nenhum modelo de edição de imagem com custo zero neste momento. " +
+      "O Tradumanga está configurado em modo FREE_ONLY e não fará fallback para modelos pagos."
+    );
+  }
+  return free;
+}
+
 export async function renderPageWithOpenRouter(input:{
   original:Buffer;
   bubbles:OpenRouterRenderBubble[];
@@ -102,7 +191,7 @@ export async function renderPageWithOpenRouter(input:{
   const key=process.env.OPENROUTER_API_KEY;
   if(!key)throw new Error("OPENROUTER_API_KEY não configurada.");
 
-  const model=process.env.OPENROUTER_IMAGE_MODEL||DEFAULT_MODEL;
+  const models=await resolveModels(key);
   const maxInputDimension=Number(process.env.OPENROUTER_MAX_INPUT_DIMENSION||5000);
 
   const prepared=await sharp(input.original,{failOn:"warning"})
@@ -111,56 +200,67 @@ export async function renderPageWithOpenRouter(input:{
     .toBuffer();
 
   const source=dataUrl("image/jpeg",prepared);
-  const body={
-    model,
-    prompt:buildPrompt(input.bubbles,input.width,input.height),
-    input_references:[{type:"image_url",image_url:{url:source}}],
-  };
-
+  const prompt=buildPrompt(input.bubbles,input.width,input.height);
   let lastError="unknown";
-  for(let attempt=0;attempt<MAX_ATTEMPTS;attempt++){
-    const response=await fetch("https://openrouter.ai/api/v1/images",{
-      method:"POST",
-      headers:{
-        Authorization:`Bearer ${key}`,
-        "Content-Type":"application/json",
-        "HTTP-Referer":process.env.OPENROUTER_SITE_URL||"https://tradumanga.vercel.app",
-        "X-Title":"Tradumanga",
-      },
-      body:JSON.stringify(body),
-      signal:AbortSignal.timeout(Number(process.env.OPENROUTER_TIMEOUT_MS||180000)),
-    });
 
-    const raw=await response.text();
-    if(!response.ok){
-      lastError=`OpenRouter HTTP ${response.status}: ${raw.slice(0,1000)}`;
-      if(retryable(response.status) && attempt<MAX_ATTEMPTS-1){
-        await sleep(800*(2**attempt));
-        continue;
-      }
-      throw new Error(lastError);
-    }
-
-    let payload:any;
-    try{ payload=JSON.parse(raw); }catch{ throw new Error("OpenRouter retornou JSON inválido."); }
-    const item=payload?.data?.[0];
-    if(!item?.b64_json)throw new Error("OpenRouter não retornou uma imagem editada.");
-
-    const mediaType=typeof item.media_type==="string"?item.media_type:"image/png";
-    const image=Buffer.from(item.b64_json,"base64");
-    if(image.length<1000)throw new Error("OpenRouter retornou uma imagem vazia ou inválida.");
-
-    const cost=Number(payload?.usage?.cost);
-    console.info(JSON.stringify({
-      event:"openrouter_image_edit_success",
+  for(const model of models){
+    const body={
       model,
-      attempt,
-      inputBytes:input.original.length,
-      outputBytes:image.length,
-      costUsd:Number.isFinite(cost)?cost:null,
-    }));
+      prompt,
+      input_references:[{type:"image_url",image_url:{url:source}}],
+    };
 
-    return {image,model,costUsd:Number.isFinite(cost)?cost:null};
+    for(let attempt=0;attempt<MAX_ATTEMPTS;attempt++){
+      const response=await fetch("https://openrouter.ai/api/v1/images",{
+        method:"POST",
+        headers:{
+          Authorization:`Bearer ${key}`,
+          "Content-Type":"application/json",
+          "HTTP-Referer":process.env.OPENROUTER_SITE_URL||"https://tradumanga.vercel.app",
+          "X-Title":"Tradumanga",
+        },
+        body:JSON.stringify(body),
+        signal:AbortSignal.timeout(Number(process.env.OPENROUTER_TIMEOUT_MS||180000)),
+      });
+
+      const raw=await response.text();
+      if(!response.ok){
+        lastError=`OpenRouter model ${model} HTTP ${response.status}: ${raw.slice(0,1000)}`;
+        if(retryable(response.status) && attempt<MAX_ATTEMPTS-1){
+          await sleep(800*(2**attempt));
+          continue;
+        }
+        // Try the next free image editor after exhausting this model.
+        break;
+      }
+
+      let payload:any;
+      try{ payload=JSON.parse(raw); }catch{ throw new Error("OpenRouter retornou JSON inválido."); }
+      const item=payload?.data?.[0];
+      if(!item?.b64_json){
+        lastError=`OpenRouter model ${model} não retornou uma imagem editada.`;
+        break;
+      }
+
+      const image=Buffer.from(item.b64_json,"base64");
+      if(image.length<1000){
+        lastError=`OpenRouter model ${model} retornou uma imagem vazia ou inválida.`;
+        break;
+      }
+
+      const cost=Number(payload?.usage?.cost);
+      console.info(JSON.stringify({
+        event:"openrouter_image_edit_success",
+        model,
+        attempt,
+        free_only:true,
+        inputBytes:input.original.length,
+        outputBytes:image.length,
+        costUsd:Number.isFinite(cost)?cost:null,
+      }));
+
+      return {image,model,costUsd:Number.isFinite(cost)?cost:null};
+    }
   }
 
   throw new Error(lastError);
