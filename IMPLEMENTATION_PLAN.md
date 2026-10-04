@@ -279,19 +279,21 @@ O contexto não deve autorizar invenção de texto que não esteja presente.
 
 Pipeline:
 
-1. carregar original;
-2. carregar regiões autorizadas;
-3. gerar máscara;
-4. remover somente o texto da região;
-5. preservar textura/fundo sempre que possível;
-6. compor texto pt-BR;
-7. respeitar direção, alinhamento, quebra de linha e estilo;
-8. gerar imagem traduzida;
-9. salvar como novo artefato.
+1. carregar original imutável;
+2. carregar regiões de texto autorizadas pela análise Gemini;
+3. preparar uma cópia da página para o OpenRouter;
+4. enviar a página ao OpenRouter Image API em modo de edição;
+5. instruir o modelo a substituir somente os textos fornecidos, preservando arte, personagens, cenários e composição;
+6. normalizar a saída para as dimensões originais;
+7. aplicar uma máscara determinística derivada dos polígonos autorizados;
+8. descartar qualquer alteração do modelo fora dessas regiões;
+9. executar QA de pixels;
+10. salvar a imagem traduzida como artefato separado.
 
-O renderer deve ser determinístico. Gemini não deve ser usado para reconstruir a página inteira.
+O OpenRouter é o motor de edição visual. Gemini continua responsável por OCR, geometria, contexto e tradução. A máscara determinística é a barreira de integridade: a saída do modelo nunca é aceita fora das regiões autorizadas.
 
 ### Fase H — QA visual e integridade
+
 
 Validações:
 
@@ -385,7 +387,7 @@ Entradas aceitas pela UI:
 
 As funções Inngest são responsáveis pelas operações pesadas. O renderer usa uma máscara derivada das regiões analisadas e verifica programaticamente que nenhuma diferença ocorreu fora dessa máscara. A página traduzida é sempre armazenada em artefato separado de `original_path`.
 
-UI/UX: o Figma existente foi usado como referência de tokens e componentes, e uma tela editável `00 — Import` foi adicionada ao arquivo `Tradumanga — UI/UX`. A implementação web recebeu os estados correspondentes de importação, processamento e leitura.
+UI/UX: a aplicação web mantém a própria implementação responsiva; Figma não é dependência de runtime nem de desenvolvimento do renderer.
 
 Pendências para declarar a fase operacionalmente concluída: executar CI/build, sincronizar o endpoint com o Inngest Cloud, testar um capítulo real ponta a ponta, validar os artefatos renderizados visualmente, concluir deduplicação/reuso e fechar a revisão humana no Reader.
 
@@ -396,7 +398,7 @@ Base implementada:
 - GitHub: Alan-uai/Tradumanga
 - Supabase: Tradumanga (voaavcicveaiitzbaogx)
 - Vercel: tradumanga
-- Figma: Tradumanga — UI/UX
+- OpenRouter: Image API para edição localizada das páginas
 
 Último commit conhecido:
 
