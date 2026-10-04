@@ -181,6 +181,11 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
 
   let clean = await sharp(original, { failOn: "warning" }).png().toBuffer();
   const maskParts: Buffer[] = [];
+  const cleanLayers: Array<{
+    bubbleIndex: number;
+    buffer: Buffer;
+    geometry: Geometry;
+  }> = [];
   const textLayers: Array<{
     bubbleIndex: number;
     buffer: Buffer;
@@ -195,18 +200,26 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
 
     // The source artwork remains immutable. Only the exact authorized text
     // polygon is replaced by the bubble/background color.
-    clean = await sharp(clean, { failOn: "warning" })
-      .composite([{ input: polygonSvg(g.polygon, background, width, height), left: 0, top: 0 }])
+    const bubbleIndex = Number(bubble.bubble_index ?? index);
+    const cleanFull = polygonSvg(g.polygon, background, width, height);
+    const cleanLayer = await sharp(cleanFull)
+      .extract({ left: g.x, top: g.y, width: g.width, height: g.height })
       .png()
       .toBuffer();
 
+    clean = await sharp(clean, { failOn: "warning" })
+      .composite([{ input: cleanLayer, left: g.x, top: g.y }])
+      .png()
+      .toBuffer();
+
+    cleanLayers.push({ bubbleIndex, buffer: cleanLayer, geometry: g });
     maskParts.push(polygonSvg(g.polygon, "#ffffff", width, height));
 
     const text = await textLayer(bubble.translated_text!.trim(), g, style);
-    textLayers.push({ bubbleIndex: Number(bubble.bubble_index ?? index), buffer: text, geometry: g });
+    textLayers.push({ bubbleIndex, buffer: text, geometry: g });
 
     manifest.push({
-      bubble_index: Number(bubble.bubble_index ?? index),
+      bubble_index: bubbleIndex,
       type: textType(style),
       source_text: bubble.source_text,
       translated_text: bubble.translated_text,
@@ -249,6 +262,7 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
     translated,
     clean,
     mask: normalizedMask,
+    cleanLayers,
     textLayers,
     manifest,
     qa: {
