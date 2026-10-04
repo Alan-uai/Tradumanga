@@ -794,8 +794,11 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
     .resize({width:w,height:h,fit:"fill"})
     .png().toBuffer();
   const mask=await buildAuthorizedTextMask(eligible,w,h);
+  const maskedEdited=await sharp(normalized,{failOn:"warning"})
+    .composite([{input:mask,blend:"dest-in"}])
+    .png().toBuffer();
   const translated=await sharp(original,{failOn:"warning"})
-    .composite([{input:normalized,blend:"over",mask} as OverlayOptions])
+    .composite([{input:maskedEdited,left:0,top:0,blend:"over"}])
     .png().toBuffer();
 
   const qa=await inspectRenderedOutput(original,translated,mask);
@@ -817,7 +820,7 @@ async function buildAuthorizedTextMask(bubbles:RenderBubble[],w:number,h:number)
   if(!paths.length){
     return await sharp({create:{width:w,height:h,channels:1,background:0}}).png().toBuffer();
   }
-  return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="black"/>${paths.join("")}</svg>`);
+  return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="black" fill-opacity="0"/>${paths.join("")}</svg>`);
 }
 
 function parseHexColor(value:unknown){
