@@ -191,10 +191,10 @@ function embeddedChapterImageUrls(html:string){
   return out;
 }
 function madaraPagerPageUrls(html:string,firstUrl:string){
-  const pagerMatch=html.match(/<select\b[^>]*id=[\"']single-pager[\"'][^>]*>([\s\S]*?)<\/select>/i);
+  const pagerMatch=html.match(new RegExp("<select\\\\b[^>]*id=[\\\"']single-pager[\\\"'][^>]*>([\\\\s\\\\S]*?)<\\\\/select>","i"));
   if(!pagerMatch)return [] as string[];
   const block=pagerMatch[1];
-  const options=[...block.matchAll(/<option\b[^>]*value=[\"']([^\"]+)[\"'][^>]*>/gi)]
+  const options=[...block.matchAll(new RegExp("<option\\\\b[^>]*value=[\\\"']([^\\\"]+)[\\\"'][^>]*>","gi"))]
     .map(m=>m[1].trim())
     .filter(Boolean);
   const absoluteOptions=options.map(raw=>{
