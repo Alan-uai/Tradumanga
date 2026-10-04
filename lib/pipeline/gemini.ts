@@ -375,3 +375,91 @@ export async function editPageWithNanoBanana2(input: {
   return Buffer.from(encoded, "base64");
 }
 
+
+
+export async function editPageWithQwenImageEditFallback(input: {
+  image: Buffer;
+  mimeType: string;
+  width: number;
+  height: number;
+  edits: GeminiImageEdit[];
+}): Promise<Buffer> {
+  const endpoint = process.env.QWEN_IMAGE_EDIT_URL?.trim();
+  if (!endpoint) {
+    throw new Error(
+      "QWEN_IMAGE_EDIT_URL não configurada. O fallback gratuito usa Qwen-Image-Edit-2511 auto-hospedado.",
+    );
+  }
+
+  const edits = input.edits.filter((item) => item.translated_text.trim());
+  const prompt = [
+    "Você é o editor visual do Tradumanga usando Qwen-Image-Edit-2511.",
+    "Edite a página de mangá/manhwa fornecida.",
+    "",
+    "OBJETIVO:",
+    "Substitua somente os textos das regiões de fala/narração indicadas.",
+    "Remova completamente o texto original antes de inserir o português.",
+    "Use exatamente as traduções fornecidas, sem inventar texto.",
+    "",
+    "PRESERVAÇÃO OBRIGATÓRIA:",
+    "- Preserve personagens, rostos, cabelo, roupas, cenários, linhas, painéis, cores, iluminação e composição.",
+    "- Não redesenhe a página.",
+    "- Não altere regiões fora das áreas de texto indicadas.",
+    "- Não traduza logos, marcas d'água, créditos, URLs, publicidade ou nomes de sites.",
+    "- Não adicione texto que não esteja nas traduções.",
+    "- Não corte, estique ou altere a proporção da página.",
+    "- Preserve a orientação vertical/horizontal e o estilo visual original dos balões.",
+    "",
+    "REGIÕES E TRADUÇÕES:",
+    JSON.stringify(edits),
+    "",
+    "As coordenadas são referências para localizar as regiões; use também a própria imagem para identificar visualmente os balões.",
+  ].join("\n");
+
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("images", new Blob([input.image], { type: input.mimeType || "image/png" }), "page.png");
+  form.append("response_format", "url");
+  form.append("profile", process.env.QWEN_IMAGE_EDIT_PROFILE?.trim() || "qwen_edit_2511_gguf_q4");
+
+  const token = process.env.QWEN_IMAGE_EDIT_TOKEN?.trim();
+  const headers:Record<string,string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const response = await fetch(endpoint.replace(/\\/$/, "") + "/v1/image/edit", {
+    method: "POST",
+    headers,
+    body: form,
+    signal: AbortSignal.timeout(Number(process.env.QWEN_IMAGE_EDIT_TIMEOUT_MS || 300000)),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Qwen Image Edit HTTP ${response.status}: ${detail.slice(0, 1200)}`);
+  }
+
+  const result = await response.json() as {
+    image_url?: string;
+    output_url?: string;
+    image_base64?: string;
+    output_image?: string;
+  };
+
+  const encoded = result.image_base64 || result.output_image;
+  if (encoded) return Buffer.from(encoded.replace(/^data:[^,]+,/, ""), "base64");
+
+  const imageUrl = result.image_url || result.output_url;
+  if (!imageUrl) throw new Error("Qwen Image Edit não retornou URL/base64 de imagem.");
+
+  const absoluteUrl = new URL(imageUrl, endpoint).toString();
+  const imageResponse = await fetch(absoluteUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    signal: AbortSignal.timeout(Number(process.env.QWEN_IMAGE_EDIT_TIMEOUT_MS || 300000)),
+  });
+  if (!imageResponse.ok) {
+    const detail = await imageResponse.text().catch(() => "");
+    throw new Error(`Qwen Image Edit output HTTP ${imageResponse.status}: ${detail.slice(0, 1000)}`);
+  }
+
+  return Buffer.from(await imageResponse.arrayBuffer());
+}
