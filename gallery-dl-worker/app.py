@@ -54,7 +54,7 @@ SOURCE_BY_HOST = {host: (sid, name) for sid, name, host in SOURCES}
 class DiscoverRequest(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     chapter: float | None = None
-    max_sources: int = Field(default=8, ge=1, le=30)
+    max_sources: int = Field(default=30, ge=1, le=30)
     results_per_source: int = Field(default=3, ge=1, le=5)
 
 
@@ -152,6 +152,85 @@ def sources(x_gallery_token: str | None = Header(default=None)):
             {"id": sid, "name": name, "domain": host}
             for sid, name, host in SOURCES
         ]
+    }
+
+
+def detect_metadata(url: str) -> tuple[str | None, float | None]:
+    try:
+        response = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "TradumangaGalleryDlWorker/1.0"},
+        )
+        response.raise_for_status()
+        html = response.text
+        title_match = re.search(
+            r'<meta[^>]+(?:property|name)=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            html,
+            re.I,
+        ) or re.search(
+            r'<title[^>]*>(.*?)</title>',
+            html,
+            re.I | re.S,
+        )
+        title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else None
+        chapter = None
+        for pattern in (
+            r"(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)[\s._:#-]*(\d+(?:[.,]\d+)?)",
+            r"/(\d+(?:[.,]\d+)?)(?:/)?$",
+        ):
+            match = re.search(pattern, url, re.I)
+            if match:
+                try:
+                    chapter = float(match.group(1).replace(",", "."))
+                    break
+                except ValueError:
+                    pass
+        if title:
+            title = re.sub(
+                r"\s*[-|–—:]?\s*(?:chapter|cap(?:í|i)tulo|cap|ch|episode|ep)\s*[#.: -]*\d+(?:[.,]\d+)?(?:\s*[-|–—:]\s*.*)?$",
+                "",
+                title,
+                flags=re.I,
+            ).strip()
+        return title or None, chapter
+    except requests.RequestException:
+        return None, None
+
+
+@app.post("/discover-from-url")
+def discover_from_url(
+    payload: dict,
+    x_gallery_token: str | None = Header(default=None),
+):
+    authorize(x_gallery_token)
+    source_url = str(payload.get("url") or "").strip()
+    if not source_url:
+        raise HTTPException(status_code=400, detail="URL obrigatória.")
+
+    title, chapter = detect_metadata(source_url)
+    if not title:
+        raise HTTPException(status_code=422, detail="Não foi possível identificar o título da obra na URL.")
+
+    results = []
+    seen: set[str] = set()
+
+    if domain_allowed(source_url):
+        results.append({"sourceId": "input", "source": "URL informada", "url": source_url})
+        seen.add(source_url)
+
+    for sid, name, host in SOURCES:
+        for candidate in search_source(title, host, 3):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            results.append({"sourceId": sid, "source": name, "url": candidate})
+
+    return {
+        "title": title,
+        "chapter": chapter,
+        "preferredUrl": results[0]["url"] if results else source_url,
+        "results": results,
     }
 
 
