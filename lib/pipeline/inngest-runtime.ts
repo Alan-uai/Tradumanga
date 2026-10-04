@@ -780,7 +780,7 @@ export async function renderTranslatedPage(original:Buffer,bubbles:RenderBubble[
 
   if(!eligible.length){
     const png=await sharp(original).png().toBuffer();
-    const mask=await sharp({create:{width:w,height:h,channels:1,background:0}}).png().toBuffer();
+    const mask=await sharp({create:{width:w,height:h,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png().toBuffer();
     return {translated:png,mask,qa:{passed:true,changedInsideMask:0,changedOutsideMask:0,width:w,height:h,model:"openrouter",renderedBubbles:0}};
   }
 
@@ -818,7 +818,7 @@ async function buildAuthorizedTextMask(bubbles:RenderBubble[],w:number,h:number)
     }
   }
   if(!paths.length){
-    return await sharp({create:{width:w,height:h,channels:1,background:0}}).png().toBuffer();
+    return await sharp({create:{width:w,height:h,channels:4,background:{r:0,g:0,b:0,alpha:0}}}).png().toBuffer();
   }
   return Buffer.from(`<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="black" fill-opacity="0"/>${paths.join("")}</svg>`);
 }
