@@ -418,7 +418,7 @@ export async function editPageWithQwenImageEditFallback(input: {
 
   const form = new FormData();
   form.append("prompt", prompt);
-  form.append("images", new Blob([input.image], { type: input.mimeType || "image/png" }), "page.png");
+  const imageBytes = new Uint8Array(input.image.byteLength);\n  imageBytes.set(input.image);\n  form.append("images", new Blob([imageBytes.buffer], { type: input.mimeType || "image/png" }), "page.png");
   form.append("response_format", "url");
   form.append("profile", process.env.QWEN_IMAGE_EDIT_PROFILE?.trim() || "qwen_edit_2511_gguf_q4");
 
