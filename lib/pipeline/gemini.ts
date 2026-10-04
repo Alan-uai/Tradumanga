@@ -426,7 +426,7 @@ export async function editPageWithQwenImageEditFallback(input: {
   const headers:Record<string,string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await fetch(endpoint.replace(/\\/$/, "") + "/v1/image/edit", {
+  const response = await fetch(endpoint.replace(/\/$/, "") + "/v1/image/edit", {
     method: "POST",
     headers,
     body: form,
