@@ -8,6 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
+import { extractGalleryDlImages, galleryDlConfigured, sourceForGalleryDlUrl } from "@/lib/gallery-dl/client";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
@@ -580,7 +581,7 @@ async function uploadPage(admin:any,series:any,chapter:any,buffer:Buffer,pageNum
 
 export async function ingestChapter(chapterId:string){
   const admin=createAdminClient();
-  const {data:chapter,error:ce}=await admin.from("chapters").select("id,series_id,chapter_number,source_type,source_url,source_path").eq("id",chapterId).single();if(ce||!chapter)throw ce||new Error("Capítulo não encontrado.");
+  const {data:chapter,error:ce}=await admin.from("chapters").select("id,series_id,chapter_number,source_type,source_url,source_path,source_metadata").eq("id",chapterId).single();if(ce||!chapter)throw ce||new Error("Capítulo não encontrado.");
   const {data:series,error:se}=await admin.from("manga_series").select("id,owner_id,anonymous_session_id,title").eq("id",chapter.series_id).single();if(se||!series)throw se||new Error("Obra não encontrada.");
   if(chapter.source_type==="images"){
     const {data:pages,error}=await admin.from("pages").select("id,page_number,original_path,original_sha256").eq("chapter_id",chapter.id).order("page_number");if(error)throw error;
@@ -589,11 +590,25 @@ export async function ingestChapter(chapterId:string){
   }else if(chapter.source_type==="url"){
     if(!chapter.source_url)throw new Error("Capítulo URL sem source_url.");
     const detected=await detectSourceMetadata(chapter.source_url);
+    const galleryPreferredUrl=typeof chapter.source_metadata?.gallery_dl?.preferredUrl==="string"
+      ? chapter.source_metadata.gallery_dl.preferredUrl
+      : null;
+    const effectiveSourceUrl=galleryPreferredUrl&&sourceForGalleryDlUrl(galleryPreferredUrl)
+      ? galleryPreferredUrl
+      : chapter.source_url;
     if(detected.title){const {error}=await admin.from("manga_series").update({title:detected.title,status:"processing"}).eq("id",series.id);if(error)throw error;}
-    const patch:Record<string,unknown>={source_canonical_url:await assertSafeUrl(chapter.source_url),source_metadata:detected};
+    const patch:Record<string,unknown>={
+      source_canonical_url:await assertSafeUrl(effectiveSourceUrl),
+      source_metadata:{
+        ...(detected as any),
+        input_url:chapter.source_url,
+        gallery_dl:chapter.source_metadata?.gallery_dl??null,
+        effective_url:effectiveSourceUrl,
+      },
+    };
     if(detected.chapterNumber!==null)patch.chapter_number=detected.chapterNumber;if(detected.chapterTitle)patch.title=detected.chapterTitle;
     const {error}=await admin.from("chapters").update(patch).eq("id",chapter.id);if(error)throw error;
-    let {buffer,url}=await fetchSafe(chapter.source_url,true);
+    let {buffer,url}=await fetchSafe(effectiveSourceUrl,true);
     const seriesAssets=await detectSeriesAssets(buffer.toString("utf8"),url);
     const assetPatch:Record<string,unknown>={};
     if(seriesAssets.banner)assetPatch.banner_path=await uploadSeriesAsset(admin,series,seriesAssets.banner,url,"banner");
@@ -606,12 +621,39 @@ export async function ingestChapter(chapterId:string){
     }
     let candidates=imageUrls(buffer.toString("utf8"),url);
 
+    // Prefer gallery-dl for sources with a dedicated extractor. The worker
+    // returns extractor-resolved image URLs; HTML detection remains fallback.
+    if (galleryDlConfigured() && sourceForGalleryDlUrl(url)) {
+      try {
+        const extracted = await extractGalleryDlImages(
+          url,
+          detected.chapterNumber,
+          detected.sourceLanguage,
+        );
+        if (extracted.images.length >= 2) {
+          candidates = extracted.images.map((image, index) => ({
+            url: image.url,
+            order: index,
+            context: "gallery-dl",
+            selectorHint: true,
+            scoreHint: 200,
+          }));
+        }
+      } catch (error) {
+        console.warn(JSON.stringify({
+          event: "gallery_dl_extract_failed",
+          url,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+
     // Madara's paged reader can expose only the first/last page in the
     // initial HTML. The ?style=list variant is the authoritative static
     // representation for the complete chapter and must be checked even when
     // the paged HTML already yielded 2+ candidates.
     try{
-      const sourceUrl=new URL(chapter.source_url);
+      const sourceUrl=new URL(effectiveSourceUrl);
       if(sourceUrl.searchParams.get("style")!=="list"){
         const listUrl=new URL(sourceUrl);
         listUrl.searchParams.set("style","list");
@@ -713,7 +755,7 @@ export async function ingestChapter(chapterId:string){
           composite_split:compositeSegments?true:false,
           selected_family:selection.family??null,
           series_assets:{logo:seriesAssets.logo?.url??null,banner:seriesAssets.banner?.url??null,candidate_count:seriesAssets.candidateCount},
-          source_variant:url===chapter.source_url?"canonical":"style=list",
+          source_variant:url===effectiveSourceUrl?"canonical":"style=list",
         },
       },
     }).eq("id",chapter.id);
