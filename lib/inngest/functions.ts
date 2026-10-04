@@ -181,7 +181,7 @@ export const translatePage = inngest.createFunction(
     const pageId = event.data.pageId;
     const result = await step.run("translate-with-gemini", async () => {
       const admin = createAdminClient();
-      const { data: page, error } = await admin.from("pages").select("id,chapter_id").eq("id", pageId).single();
+      const { data: page, error } = await admin.from("pages").select("id,chapter_id,original_path").eq("id", pageId).single();
       if (error || !page) throw error || new Error("Página não encontrada.");
       const { data: chapter } = await admin.from("chapters").select("context_json,series_id").eq("id", page.chapter_id).single();
       if (!chapter) throw new Error("Capítulo não encontrado.");
@@ -196,7 +196,7 @@ export const translatePage = inngest.createFunction(
 
       const { data: pageImage, error: pageImageError } = await admin.storage
         .from("manga-pages")
-        .download((await admin.from("pages").select("original_path").eq("id", pageId).single()).data?.original_path ?? "");
+        .download(page.original_path);
       if (pageImageError || !pageImage) throw pageImageError || new Error("Não foi possível carregar a imagem para tradução contextual.");
       const imageBuffer = Buffer.from(await pageImage.arrayBuffer());
 
