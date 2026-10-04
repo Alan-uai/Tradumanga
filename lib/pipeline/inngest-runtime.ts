@@ -8,6 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
+import { extractGalleryDlImages, galleryDlConfigured, sourceForGalleryDlUrl } from "@/lib/gallery-dl/client";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
@@ -605,6 +606,33 @@ export async function ingestChapter(chapterId:string){
       if(error)throw error;
     }
     let candidates=imageUrls(buffer.toString("utf8"),url);
+
+    // Prefer gallery-dl for sources with a dedicated extractor. The worker
+    // returns extractor-resolved image URLs; HTML detection remains fallback.
+    if (galleryDlConfigured() && sourceForGalleryDlUrl(url)) {
+      try {
+        const extracted = await extractGalleryDlImages(
+          url,
+          detected.chapterNumber,
+          detected.sourceLanguage,
+        );
+        if (extracted.images.length >= 2) {
+          candidates = extracted.images.map((image, index) => ({
+            url: image.url,
+            order: index,
+            context: "gallery-dl",
+            selectorHint: true,
+            scoreHint: 200,
+          }));
+        }
+      } catch (error) {
+        console.warn(JSON.stringify({
+          event: "gallery_dl_extract_failed",
+          url,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
 
     // Madara's paged reader can expose only the first/last page in the
     // initial HTML. The ?style=list variant is the authoritative static
