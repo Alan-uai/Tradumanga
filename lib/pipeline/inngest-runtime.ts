@@ -307,11 +307,14 @@ function imageUrls(html:string,base:string){
   // #single-pager select tells us how many image files exist. In that case,
   // derive the remaining page URLs from the first image filename instead of
   // treating the first page as the entire chapter.
-  if(out.length===1){
-    const pagerPages=madaraPagerPageUrls(html,out[0].url);
-    for(const pageUrl of pagerPages){
-      addImageCandidate(out,seen,pageUrl,base,"reader madara-single-pager",orderRef);
-      if(out.length>=MAX_HTML_IMAGES)break;
+  {
+    const firstReader=out.find(x=>x.selectorHint);
+    const pagerPages=firstReader?madaraPagerPageUrls(html,firstReader.url):[];
+    if(pagerPages.length>out.length){
+      for(const pageUrl of pagerPages){
+        addImageCandidate(out,seen,pageUrl,base,"reader madara-single-pager",orderRef);
+        if(out.length>=MAX_HTML_IMAGES)break;
+      }
     }
   }
 
