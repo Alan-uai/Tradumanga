@@ -3,7 +3,7 @@ const MANGADEX_HOSTS = new Set(["mangadex.org", "www.mangadex.org", "api.mangade
 export function isMangaDexChapterUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
-    return MANGADEX_HOSTS.has(url.hostname.toLowerCase()) && /^\\/chapter\\/[0-9a-f-]{36}\\/?$/i.test(url.pathname);
+    return MANGADEX_HOSTS.has(url.hostname.toLowerCase()) && /^\/chapter\/[0-9a-f-]{36}\/?$/i.test(url.pathname);
   } catch {
     return false;
   }
@@ -11,7 +11,7 @@ export function isMangaDexChapterUrl(raw: string): boolean {
 
 export function getMangaDexChapterId(raw: string): string {
   const url = new URL(raw);
-  const match = url.pathname.match(/\\/chapter\\/([0-9a-f-]{36})\\/?$/i);
+  const match = url.pathname.match(/\/chapter\/([0-9a-f-]{36})\/?$/i);
   if (!match) throw new Error("URL do MangaDex não contém um ID de capítulo válido.");
   return match[1];
 }
