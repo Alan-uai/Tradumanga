@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote_plus, urlparse
 
 import requests
@@ -219,12 +220,11 @@ def discover_from_url(
         results.append({"sourceId": "input", "source": "URL informada", "url": source_url})
         seen.add(source_url)
 
-    for sid, name, host in SOURCES:
-        for candidate in search_source(title, host, 3):
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            results.append({"sourceId": sid, "source": name, "url": candidate})
+    for item in search_all_sources(title, SOURCES, 3):
+        if item["url"] in seen:
+            continue
+        seen.add(item["url"])
+        results.append(item)
 
     return {
         "title": title,
@@ -234,6 +234,30 @@ def discover_from_url(
     }
 
 
+
+def search_all_sources(title: str, sources: list[tuple[str, str, str]], per_source: int) -> list[dict]:
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(search_source, title, host, per_source): (sid, name, host)
+            for sid, name, host in sources
+        }
+        for future in as_completed(futures):
+            sid, name, host = futures[future]
+            try:
+                candidates = future.result()
+            except Exception:
+                candidates = []
+            results.extend(
+                {"sourceId": sid, "source": name, "url": candidate}
+                for candidate in candidates
+            )
+    # Preserve deterministic source priority after concurrent collection.
+    priority = {sid: index for index, (sid, _, _) in enumerate(sources)}
+    results.sort(key=lambda item: (priority.get(item["sourceId"], 999), item["url"]))
+    seen: set[str] = set()
+    return [item for item in results if not (item["url"] in seen or seen.add(item["url"]))]
+
 @app.post("/discover")
 def discover(
     payload: DiscoverRequest,
@@ -241,19 +265,8 @@ def discover(
 ):
     authorize(x_gallery_token)
 
-    results = []
-    seen: set[str] = set()
     sources = SOURCES[: payload.max_sources]
-
-    # Search several supported gallery-dl domains concurrently at the HTTP layer
-    # would be faster, but sequential requests are deliberately used here to
-    # avoid hammering small manga sites and search providers.
-    for sid, name, host in sources:
-        for candidate in search_source(payload.title, host, payload.results_per_source):
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            results.append({"sourceId": sid, "source": name, "url": candidate})
+    results = search_all_sources(payload.title, sources, payload.results_per_source)
     return {"title": payload.title, "results": results}
 
 
