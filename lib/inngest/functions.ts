@@ -257,7 +257,7 @@ export const renderPage = inngest.createFunction(
       const { data: series } = await admin.from("manga_series").select("id,owner_id,anonymous_session_id").eq("id", chapter.series_id).single();
       if (!series) throw new Error("Obra não encontrada.");
       const { data: bubbles, error: be } = await admin.from("speech_bubbles")
-        .select("polygon,bbox,source_text,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
+        .select("bubble_index,polygon,bbox,source_text,translated_text,style_json").eq("page_id", pageId).order("bubble_index");
       if (be) throw be;
       const { data: file, error: fe } = await admin.storage.from("manga-pages").download(page.original_path);
       if (fe || !file) throw fe || new Error("Não foi possível baixar o original.");
@@ -270,6 +270,7 @@ export const renderPage = inngest.createFunction(
         source_text:b.source_text,
         translated_text:b.translated_text,
         style_json:b.style_json,
+        lines:Array.isArray(b.style_json?.lines) ? b.style_json.lines : [],
       })));
       if(!rendered.qa.passed) throw new Error(`QA de camadas falhou: ${rendered.qa.changedOutsideMask} pixels alterados fora das regiões autorizadas.`);
 
