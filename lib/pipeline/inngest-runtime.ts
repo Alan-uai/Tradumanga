@@ -653,7 +653,7 @@ export async function ingestChapter(chapterId:string){
     // representation for the complete chapter and must be checked even when
     // the paged HTML already yielded 2+ candidates.
     try{
-      const sourceUrl=new URL(chapter.source_url);
+      const sourceUrl=new URL(effectiveSourceUrl);
       if(sourceUrl.searchParams.get("style")!=="list"){
         const listUrl=new URL(sourceUrl);
         listUrl.searchParams.set("style","list");
@@ -755,7 +755,7 @@ export async function ingestChapter(chapterId:string){
           composite_split:compositeSegments?true:false,
           selected_family:selection.family??null,
           series_assets:{logo:seriesAssets.logo?.url??null,banner:seriesAssets.banner?.url??null,candidate_count:seriesAssets.candidateCount},
-          source_variant:url===chapter.source_url?"canonical":"style=list",
+          source_variant:url===effectiveSourceUrl?"canonical":"style=list",
         },
       },
     }).eq("id",chapter.id);
