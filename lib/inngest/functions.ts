@@ -102,6 +102,7 @@ export const analyzePage = inngest.createFunction(
           confidence: typeof bubble.confidence === "number" ? bubble.confidence : null,
           style_json: {
             ...(bubble.style_json && typeof bubble.style_json === "object" ? bubble.style_json : {}),
+            lines: Array.isArray((bubble as any).lines) ? (bubble as any).lines : null,
             intent: typeof bubble.intent === "string" ? bubble.intent : null,
             speaker_hint: typeof bubble.speaker_hint === "string" ? bubble.speaker_hint : null,
           },
