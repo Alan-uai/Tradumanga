@@ -279,7 +279,7 @@ export const renderPage = inngest.createFunction(
         const bubbleIndex=Number(item.bubble_index);
         return {
           ...item,
-          clean_layer_path:cleanPath,
+          clean_layer_path:`${prefix}/${series.id}/${chapter.chapter_number}/layers/${stem}/clean-${String(bubbleIndex).padStart(4,"0")}.png`,
           text_layer_path:`${prefix}/${series.id}/${chapter.chapter_number}/layers/${stem}/text-${String(bubbleIndex).padStart(4,"0")}.png`,
         };
       });
@@ -293,13 +293,21 @@ export const renderPage = inngest.createFunction(
       },null,2));
       const {error:manu}=await admin.storage.from("manga-pages").upload(manifestPath,manifestBuffer,{contentType:"application/json",upsert:true});if(manu)throw manu;
 
+      for(const layer of rendered.cleanLayers){
+        const item=manifest.find((entry:any)=>Number(entry.bubble_index)===layer.bubbleIndex);
+        if(!item) continue;
+        const cleanLayerPath=String(item.clean_layer_path);
+        const {error:ce}=await admin.storage.from("manga-pages").upload(cleanLayerPath,layer.buffer,{contentType:"image/png",upsert:true});if(ce)throw ce;
+      }
+
       for(const layer of rendered.textLayers){
         const item=manifest.find((entry:any)=>Number(entry.bubble_index)===layer.bubbleIndex);
         if(!item) continue;
         const textPath=String(item.text_layer_path);
         const {error:te}=await admin.storage.from("manga-pages").upload(textPath,layer.buffer,{contentType:"image/png",upsert:true});if(te)throw te;
+        const cleanLayerPath=String(item.clean_layer_path);
         const {error:be}=await admin.from("speech_bubbles").update({
-          clean_layer_path:cleanPath,
+          clean_layer_path:cleanLayerPath,
           text_layer_path:textPath,
           layer_status:"rendered",
         }).eq("page_id",pageId).eq("bubble_index",layer.bubbleIndex);
