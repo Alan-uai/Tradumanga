@@ -62,6 +62,15 @@ export function galleryDlConfigured() {
   return Boolean(process.env.GALLERY_DL_WORKER_URL);
 }
 
+export type GalleryDlUrlDiscovery = DiscoverResponse & {
+  chapter: number | null;
+  preferredUrl: string;
+};
+
+export async function discoverGalleryDlFromUrl(url: string) {
+  return workerFetch<GalleryDlUrlDiscovery>("/discover-from-url", { url });
+}
+
 export async function discoverGalleryDlSources(title: string, chapter?: number | null) {
   return workerFetch<DiscoverResponse>("/discover", {
     title,
