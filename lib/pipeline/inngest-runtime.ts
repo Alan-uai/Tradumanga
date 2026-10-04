@@ -8,7 +8,7 @@ import sharp, { type OverlayOptions, type TextAlign } from "sharp";
 import { pdf } from "pdf-to-img";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { canonicalizeSourceUrl } from "@/lib/ingest/url";
-import { editPageWithNanoBanana2, editPageWithQwenImageEditFallback } from "@/lib/pipeline/gemini";
+import { editPageWithQwenImageEdit } from "@/lib/pipeline/gemini";
 
 const MAX_REMOTE_BYTES = Number(process.env.MAX_REMOTE_BYTES || 250 * 1024 * 1024);
 const MAX_HTML_BYTES = Number(process.env.MAX_HTML_BYTES || 8 * 1024 * 1024);
