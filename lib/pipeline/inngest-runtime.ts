@@ -191,10 +191,10 @@ function embeddedChapterImageUrls(html:string){
   return out;
 }
 function madaraPagerPageUrls(html:string,firstUrl:string){
-  const pagerMatch=html.match(/<select\\b[^>]*id=[\"']single-pager[\"'][^>]*>([\\s\\S]*?)<\\/select>/i);
+  const pagerMatch=html.match(/<select\b[^>]*id=[\"']single-pager[\"'][^>]*>([\s\\S]*?)<\/select>/i);
   if(!pagerMatch)return [] as string[];
   const block=pagerMatch[1];
-  const options=[...block.matchAll(/<option\\b[^>]*value=[\"']([^\"]+)[\"'][^>]*>/gi)]
+  const options=[...block.matchAll(/<option\b[^>]*value=[\"']([^\"]+)[\"'][^>]*>/gi)]
     .map(m=>m[1].trim())
     .filter(Boolean);
   const absoluteOptions=options.map(raw=>{
@@ -205,12 +205,12 @@ function madaraPagerPageUrls(html:string,firstUrl:string){
   }).filter((x):x is string=>Boolean(x));
   if(absoluteOptions.length>=2)return [...new Set(absoluteOptions)];
 
-  const count=(block.match(/<option\\b/gi)??[]).length;
+  const count=(block.match(/<option\b/gi)??[]).length;
   if(count<2)return [] as string[];
 
   try{
     const u=new URL(firstUrl);
-    const match=u.pathname.match(/(\\d+)(?=\\.[a-z0-9]+$)/i);
+    const match=u.pathname.match(/(\d+)(?=\\.[a-z0-9]+$)/i);
     if(!match)return [] as string[];
     const token=match[1];
     const pad=token.length;
