@@ -159,38 +159,39 @@ function addImageCandidate(out:ImageCandidate[],seen:Set<string>,raw:string,base
  */
 function embeddedChapterImageUrls(html:string){
   const out:string[]=[];
-  const assignmentRe=/(?:(?:var|let|const)\s+)?(?:chapter_preloaded_images|chapter_images|chapterImages|chapter_images_data|chapterImagesData)\s*=\s*/gi;
-  for(const match of html.matchAll(assignmentRe)){
-    const start=(match.index??0)+match[0].length;
-    const open=html.indexOf("[",start);
-    if(open<0)continue;
-    let depth=0,quote="",escaped=false,end=-1;
-    for(let i=open;i<html.length;i++){
-      const ch=html[i];
-      if(quote){
-        if(escaped){escaped=false;continue;}
-        if(ch==="\\"){escaped=true;continue;}
-        if(ch===quote)quote="";
-        continue;
-      }
-      if(ch==='"'||ch==="'"){quote=ch;continue;}
-      if(ch==="[")depth++;
-      else if(ch==="]"){
-        depth--;
-        if(depth===0){end=i;break;}
-      }
-    }
-    if(end<0)continue;
-    const block=html.slice(open,end+1).replace(/\\\//g,"/");
-    const urlRe=/(["'])((?:https?:)?\/\/[^"'\s<>]+)\1/gi;
-    for(const m of block.matchAll(urlRe)){
-      const value=m[2].startsWith("//")?"https:"+m[2]:m[2];
-      if(!out.includes(value))out.push(value);
+  const seen=new Set<string>();
+  const add=(raw:string)=>{
+    try{
+      let value=raw.trim()
+        .replace(/\\\\\//g,"/")
+        .replace(/\\u002f/gi,"/")
+        .replace(/\\u0026/gi,"&")
+        .replace(/\\u003f/gi,"?")
+        .replace(/\\u003d/gi,"=")
+        .replace(/&amp;/gi,"&");
+      if(value.startsWith("//"))value="https:"+value;
+      if(!/^https?:\\/\\//i.test(value))return;
+      if(!seen.has(value)){seen.add(value);out.push(value);}
+    }catch{}
+  };
+  const markerRe=/(?:chapter_preloaded_images|chapter_images|chapterImages|chapter_images_data|chapterImagesData)/gi;
+  for(const marker of html.matchAll(markerRe)){
+    const center=marker.index??0;
+    const start=Math.max(0,center-1200);
+    const end=Math.min(html.length,center+250000);
+    const block=html.slice(start,end);
+    const quotedUrlRe=/(["'])(https?:\\/\\/|https?:\\\\/\\\\/|\\/\\/)([^"'<>\\s\\]+)\\1/gi;
+    for(const m of block.matchAll(quotedUrlRe))add((m[2]+m[3]).replace(/\\\\\//g,"/").replace(/\\\//g,"/"));
+    const escapedUrlRe=/(?:https?:)?\\\\/\\\\/[^"'<>\\s\\]+/gi;
+    for(const m of block.matchAll(escapedUrlRe))add(m[0]);
+    const directUrlRe=/(?:https?:)?\\/\\/[^"'<>\\s\\]+/gi;
+    for(const m of block.matchAll(directUrlRe)){
+      const value=m[0].startsWith("//")?"https:"+m[0]:m[0];
+      if(/\\.(?:jpe?g|png|webp|gif|bmp|avif)(?:[?#]|$)/i.test(value)||/chapter|page[_-]?\\d+/i.test(value))add(value);
     }
   }
   return out;
 }
-
 function imageUrls(html:string,base:string){
   const out:ImageCandidate[]=[],seen=new Set<string>(),orderRef={value:0};
 
@@ -250,11 +251,12 @@ function imageUrls(html:string,base:string){
     if(out.length>=MAX_HTML_IMAGES)break;
   }
 
-  // Some themes JSON-escape the slashes inside chapter_images:
+  // Some themes JSON-escape the slashes inside chapter_images.
   // https:\/\/cdn.example/page_0002.webp
-  const escapedImageRe=/https?:\\\/\\\/[^"'\s<>\\]+\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\\?[^"'\s<>\\]*)?/gi;
+  const escapedImageRe=/(?:https?:)?\\\\/\\\\/[^"'\\s<>\\]+(?:\\.(?:jpe?g|png|webp|gif|bmp|avif)(?:\\?[^"'\\s<>\\]*)?|[?#][^"'\\s<>\\]*)/gi;
   for(const m of html.matchAll(escapedImageRe)){
-    const value=m[0].replace(/\\\//g,"/");
+    const raw=m[0].replace(/\\\\\//g,"/");
+    const value=raw.startsWith("//")?"https:"+raw:raw;
     addImageCandidate(out,seen,value,base,"reader escaped-js",orderRef);
     if(out.length>=MAX_HTML_IMAGES)break;
   }
