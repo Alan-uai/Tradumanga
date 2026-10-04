@@ -194,6 +194,12 @@ export const translatePage = inngest.createFunction(
         .select("source_term,preferred_translation,notes").eq("series_id", series.id);
       if (ge) throw ge;
 
+      const { data: pageImage, error: pageImageError } = await admin.storage
+        .from("manga-pages")
+        .download((await admin.from("pages").select("original_path").eq("id", pageId).single()).data?.original_path ?? "");
+      if (pageImageError || !pageImage) throw pageImageError || new Error("Não foi possível carregar a imagem para tradução contextual.");
+      const imageBuffer = Buffer.from(await pageImage.arrayBuffer());
+
       await admin.from("pages").update({ status: "translating", error_message: null }).eq("id", pageId);
       const translated = await translatePageWithGemini({
         sourceLanguage: series.source_language,
@@ -205,6 +211,8 @@ export const translatePage = inngest.createFunction(
           style_json:b.style_json && typeof b.style_json==="object" ? b.style_json : {},
         })),
         glossary: glossary ?? [],
+        imageBase64: imageBuffer.toString("base64"),
+        mimeType: pageImage.type || "image/jpeg",
       });
 
       for (const item of Array.isArray(translated.translations) ? translated.translations : []) {
