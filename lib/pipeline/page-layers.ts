@@ -7,6 +7,7 @@ export type PageLayerBubble = {
   source_text: string | null;
   translated_text: string | null;
   style_json: Record<string, unknown> | null;
+  lines?: unknown;
 };
 
 type Point = { x: number; y: number };
@@ -112,6 +113,24 @@ function polygonSvg(points: Point[], fill: string, width: number, height: number
   );
 }
 
+function textLinePolygons(value: unknown, width: number, height: number): Point[][] {
+  if (!Array.isArray(value)) return [];
+  const result: Point[][] = [];
+  for (const line of value) {
+    if (!Array.isArray(line)) continue;
+    const points = line.map((p) => point(p, width, height)).filter(Boolean) as Point[];
+    if (points.length >= 3) result.push(points);
+  }
+  return result;
+}
+
+function polygonsSvg(polygons: Point[][], fill: string, width: number, height: number) {
+  const body = polygons
+    .map((points) => `<polygon points="${points.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ")}" fill="${escapeXml(fill)}"/>`)
+    .join("");
+  return Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${body}</svg>`);
+}
+
 function fontSizeFor(text: string, g: Geometry, style: Record<string, unknown> | null) {
   const explicit = Number(style?.font_size ?? style?.fontSize ?? 0);
   if (Number.isFinite(explicit) && explicit >= 8 && explicit <= 256) return explicit;
@@ -193,14 +212,15 @@ function splitLines(text: string, style: TextStyle, width: number) {
   return out.length ? out : [text];
 }
 
-async function localInpaint(original: Buffer, g: Geometry): Promise<Buffer> {
+async function localInpaint(original: Buffer, g: Geometry, cleanPolygons: Point[][]): Promise<Buffer> {
   const crop = await sharp(original)
     .extract({ left: g.x, top: g.y, width: g.width, height: g.height })
     .ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const mask = await sharp(polygonSvg(
-    g.polygon.map((p) => ({ x: p.x - g.x, y: p.y - g.y })),
-    "#ffffff", g.width, g.height,
-  )).greyscale().raw().toBuffer();
+  const relativePolygons = cleanPolygons.length
+    ? cleanPolygons.map((polygon) => polygon.map((p) => ({ x: p.x - g.x, y: p.y - g.y })))
+    : [g.polygon.map((p) => ({ x: p.x - g.x, y: p.y - g.y }))];
+  const mask = await sharp(polygonsSvg(relativePolygons, "#ffffff", g.width, g.height))
+    .greyscale().raw().toBuffer();
   const { data, info } = crop;
   const pixels = Buffer.from(data);
   const known = new Uint8Array(info.width * info.height);
@@ -291,12 +311,13 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
   for (const { bubble, index } of active) {
     const g = geometry(bubble, width, height);
     const style = bubble.style_json ?? {};
+    const linePolygons = textLinePolygons(bubble.lines ?? style.lines, width, height);
 
     // Ballons-style block isolation: reconstruct only the authorized text
     // region instead of painting the whole polygon with a guessed background.
     // This keeps bubble borders/artwork outside the text mask untouched.
     const bubbleIndex = Number(bubble.bubble_index ?? index);
-    const cleanLayer = await localInpaint(original, g);
+    const cleanLayer = await localInpaint(original, g, linePolygons);
 
     clean = await sharp(clean, { failOn: "warning" })
       .composite([{ input: cleanLayer, left: g.x, top: g.y }])
@@ -316,6 +337,7 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
       translated_text: bubble.translated_text,
       bbox: { x: g.x, y: g.y, width: g.width, height: g.height },
       polygon: g.polygon,
+      text_line_polygons: linePolygons,
       style,
       renderer: "tradumanga-textblock-v2",
       cleaning: "localized-propagation-v1",
