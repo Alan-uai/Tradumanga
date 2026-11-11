@@ -327,6 +327,15 @@ async function textLayer(
   const style = styleOf(rawStyle, text, g);
   const canvas = createCanvas(g.width, g.height);
   const ctx = canvas.getContext("2d");
+  if (g.polygon.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(g.polygon[0].x - g.x, g.polygon[0].y - g.y);
+    for (const vertex of g.polygon.slice(1)) {
+      ctx.lineTo(vertex.x - g.x, vertex.y - g.y);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
   const maxWidth = Math.max(1, g.width - 8);
   const maxHeight = Math.max(1, g.height - 8);
   const family = canvasFontFamily(style.fontFamily);
