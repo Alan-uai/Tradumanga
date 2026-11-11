@@ -44,6 +44,17 @@ async function main() {
       bubbles: [bubble([{ x: 50, y: 440 }, { x: 250, y: 440 }, { x: 250, y: 500 }, { x: 50, y: 500 }], "Fallback", { font_family: "fonte-inexistente-xyz" })],
     },
     {
+      name: "metadados tipográficos inválidos usam fallback",
+      bubbles: [bubble([{ x: 30, y: 120 }, { x: 250, y: 120 }, { x: 250, y: 190 }, { x: 30, y: 190 }], "Tradução segura", {
+        font_size: "invalid",
+        font_weight: "invalid",
+        line_spacing: "invalid",
+        letter_spacing: "invalid",
+        stroke_width: "invalid",
+        opacity: "invalid",
+      })],
+    },
+    {
       name: "texto vertical",
       bubbles: [bubble([{ x: 280, y: 80 }, { x: 350, y: 80 }, { x: 350, y: 300 }, { x: 280, y: 300 }], "翻訳テスト", { orientation: "vertical", font_size: 24 })],
     },
