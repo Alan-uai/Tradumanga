@@ -294,7 +294,7 @@ export const renderPage = inngest.createFunction(
         };
       });
       const manifestBuffer=Buffer.from(JSON.stringify({
-        version:"page-layers-v1",
+        version:"page-layers-v2",
         page_id:pageId,
         width:rendered.qa.width,
         height:rendered.qa.height,
@@ -330,8 +330,8 @@ export const renderPage = inngest.createFunction(
         layer_manifest_path:manifestPath,
         translated_sha256:sha256(rendered.translated),
         authorized_mask_path:maskPath,
-        layer_render_version:"v1",
-        render_version:"v4-layers",
+        layer_render_version:"v2-canvas-text",
+        render_version:"v5-canvas-layers",
         status:"ready",
         error_message:null,
       }).eq("id",pageId);if(pu)throw pu;
