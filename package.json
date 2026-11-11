@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:render": "tsx --tsconfig tsconfig.json .smoke/render-smoke.ts"
   },
   "dependencies": {
     "@google/genai": "^1.20.0",
