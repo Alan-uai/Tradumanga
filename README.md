@@ -8,7 +8,8 @@ Next.js + Supabase + Gemini + Inngest para tradução contextual de mangás/manh
 - Inngest Cloud para orquestração durável
 - Supabase PostgreSQL/Auth/Storage
 - Gemini multimodal para OCR, contexto e tradução
-- Sharp para ingestão, composição determinística e QA
+- Sharp para ingestão, limpeza localizada, composição determinística e QA
+- `@napi-rs/canvas` (Skia Canvas API) para renderização tipográfica em camadas PNG transparentes
 - pdf-to-img para rasterização de PDF em Node
 - bucket privado manga-pages
 
@@ -16,7 +17,7 @@ O antigo worker Docker foi removido. Não existe mais processo contínuo, pollin
 
 ## Pipeline
 
-entrada → Inngest → ingestão → análise Gemini → Context Engine → tradução → renderização Sharp → QA de pixels → Storage → Reader
+entrada → Inngest → ingestão → análise Gemini → Context Engine → tradução → limpeza localizada Sharp → texto Canvas → composição Sharp → QA de pixels → Storage → Reader
 
 As páginas são processadas como funções independentes. O limite global do pipeline é de 5 etapas simultâneas, usando uma fila de concorrência compartilhada no Inngest.
 
@@ -65,7 +66,7 @@ A migração para Vercel/Inngest removeu a possibilidade de executar o binário 
 
 A imagem original nunca é sobrescrita.
 
-O renderer cria a máscara somente a partir das regiões autorizadas pelo Gemini. O QA compara os pixels decodificados do original e do resultado e exige:
+O renderer usa o Canvas 2D do `@napi-rs/canvas` para rasterizar cada tradução em uma camada PNG transparente, com medição real de texto, quebra de linha, ajuste de fonte e orientação vertical/horizontal. Sharp limpa e compõe as camadas e gera a máscara somente a partir das regiões autorizadas pelo Gemini. O QA compara os pixels decodificados do original e do resultado, rejeita alterações fora da máscara e sinaliza texto que não cabe na região, exigindo:
 
 diff(translated, original) ∩ outside_mask = 0
 

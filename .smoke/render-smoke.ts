@@ -1,8 +1,14 @@
 import sharp from "sharp";
 import { renderTranslatedPage } from "@/lib/pipeline/inngest-runtime";
 
-function bubble(polygon: any[], text: string, extra: Record<string, unknown> = {}) {
-  return { polygon, bbox: null, translated_text: text, style_json: { orientation: "horizontal", ...(extra as any) } };
+function bubble(polygon: Array<{ x: number; y: number }>, text: string, extra: Record<string, unknown> = {}) {
+  return {
+    polygon,
+    bbox: null,
+    source_text: "source",
+    translated_text: text,
+    style_json: { orientation: "horizontal", ...(extra as Record<string, unknown>) },
+  };
 }
 
 async function main() {
@@ -10,34 +16,100 @@ async function main() {
     create: { width: 400, height: 600, channels: 3, background: { r: 240, g: 240, b: 235 } },
   }).jpeg().toBuffer();
 
-  const cases: Array<{ name: string; bubbles: any[] }> = [
-    { name: "patch 3x3 (median 5)", bubbles: [bubble([{ x: 10, y: 10 }, { x: 13, y: 10 }, { x: 13, y: 13 }, { x: 10, y: 13 }], "Oi")] },
-    { name: "balão grande, texto curto (mask > text bbox)", bubbles: [bubble([{ x: 50, y: 100 }, { x: 250, y: 100 }, { x: 250, y: 200 }, { x: 50, y: 200 }], "Tudo bem?")] },
-    { name: "texto longo em balão médio", bubbles: [bubble([{ x: 20, y: 300 }, { x: 180, y: 300 }, { x: 180, y: 420 }, { x: 20, y: 420 }], "Uma frase bem longa para forçar quebra de linha e teste de overflow da camada de texto dentro do balão.") ] },
-    { name: "balão colado na borda direita", bubbles: [bubble([{ x: 392, y: 500 }, { x: 400, y: 500 }, { x: 400, y: 540 }, { x: 392, y: 540 }], "Ok")] },
-    { name: "sem balões traduzidos", bubbles: [] },
-    { name: "só balão sem texto", bubbles: [bubble([{ x: 50, y: 500 }, { x: 250, y: 500 }, { x: 250, y: 560 }, { x: 50, y: 560 }], "   ")] },
-    { name: "bbox relativo (0..1)", bubbles: [{ polygon: [], bbox: { x: 0.1, y: 0.1, width: 0.3, height: 0.1 }, translated_text: "Rel", style_json: { orientation: "vertical" } }] },
-    { name: "fonte inexistente (fallback)", bubbles: [bubble([{ x: 50, y: 440 }, { x: 250, y: 440 }, { x: 250, y: 500 }, { x: 50, y: 500 }], "Fallback", { font: "fonte-inexistente-xyz" })] },
-    { name: "polígono fora dos limites", bubbles: [bubble([{ x: -50, y: -50 }, { x: 9999, y: -50 }, { x: 9999, y: 9999 }, { x: -50, y: 9999 }], "Fora")] },
-    { name: "coordenadas relativas 0..1 no polígono", bubbles: [bubble([{ x: 0.05, y: 0.05 }, { x: 0.5, y: 0.05 }, { x: 0.5, y: 0.15 }, { x: 0.05, y: 0.15 }], "Relativo")] },
-    { name: "polígono degenerado (2 pontos)", bubbles: [bubble([{ x: 30, y: 200 }, { x: 90, y: 240 }], "Deg")] },
+  const cases: Array<{
+    name: string;
+    bubbles: Array<ReturnType<typeof bubble>>;
+    expectedPass?: boolean;
+  }> = [
+    {
+      name: "balão grande, texto curto",
+      bubbles: [bubble([{ x: 50, y: 100 }, { x: 250, y: 100 }, { x: 250, y: 200 }, { x: 50, y: 200 }], "Tudo bem?")],
+    },
+    {
+      name: "texto longo com quebra por largura real",
+      bubbles: [bubble([{ x: 20, y: 300 }, { x: 180, y: 300 }, { x: 180, y: 420 }, { x: 20, y: 420 }], "Uma frase bem longa para forçar quebra de linha e testar o ajuste automático do texto dentro do balão.")],
+    },
+    {
+      name: "acentos e pontuação em português",
+      bubbles: [bubble([{ x: 30, y: 40 }, { x: 250, y: 40 }, { x: 250, y: 110 }, { x: 30, y: 110 }], "Você está bem? É incrível!", {
+        font_family: "sans-serif",
+        font_size: 28,
+        font_weight: 700,
+        letter_spacing: 0.4,
+        text_color: "#171717",
+      })],
+    },
+    {
+      name: "fonte desconhecida com fallback",
+      bubbles: [bubble([{ x: 50, y: 440 }, { x: 250, y: 440 }, { x: 250, y: 500 }, { x: 50, y: 500 }], "Fallback", { font_family: "fonte-inexistente-xyz" })],
+    },
+    {
+      name: "metadados tipográficos inválidos usam fallback",
+      bubbles: [bubble([{ x: 30, y: 120 }, { x: 250, y: 120 }, { x: 250, y: 190 }, { x: 30, y: 190 }], "Tradução segura", {
+        font_size: "invalid",
+        font_weight: "invalid",
+        line_spacing: "invalid",
+        letter_spacing: "invalid",
+        stroke_width: "invalid",
+        opacity: "invalid",
+      })],
+    },
+    {
+      name: "texto vertical",
+      bubbles: [bubble([{ x: 280, y: 80 }, { x: 350, y: 80 }, { x: 350, y: 300 }, { x: 280, y: 300 }], "翻訳テスト", { orientation: "vertical", font_size: 24 })],
+    },
+    {
+      name: "bbox relativo (0..1)",
+      bubbles: [{ ...bubble([], "Rel"), bbox: { x: 0.1, y: 0.1, width: 0.3, height: 0.1 } }],
+    },
+    {
+      name: "polígono fora dos limites",
+      bubbles: [bubble([{ x: -50, y: -50 }, { x: 9999, y: -50 }, { x: 9999, y: 9999 }, { x: -50, y: 9999 }], "Fora")],
+    },
+    {
+      name: "coordenadas relativas 0..1 no polígono",
+      bubbles: [bubble([{ x: 0.05, y: 0.05 }, { x: 0.5, y: 0.05 }, { x: 0.5, y: 0.15 }, { x: 0.05, y: 0.15 }], "Relativo")],
+    },
+    {
+      name: "sem balões traduzidos",
+      bubbles: [],
+    },
+    {
+      name: "texto em região pequena sinaliza overflow",
+      bubbles: [bubble([{ x: 10, y: 10 }, { x: 13, y: 10 }, { x: 13, y: 13 }, { x: 10, y: 13 }], "Texto impossível de encaixar")],
+      expectedPass: false,
+    },
+    {
+      name: "balão estreito sinaliza overflow",
+      bubbles: [bubble([{ x: 392, y: 500 }, { x: 400, y: 500 }, { x: 400, y: 540 }, { x: 392, y: 540 }], "Ok")],
+      expectedPass: false,
+    },
   ];
 
   let failures = 0;
-  for (const c of cases) {
+  for (const testCase of cases) {
     try {
-      const out = await renderTranslatedPage(original, c.bubbles);
-      const ok = out.qa.passed;
-      console.log(`PASS  ${c.name} (qa=${JSON.stringify(out.qa.changedInsideMask)})`);
-      if (!ok) { failures++; console.log(`      QA failed!`); }
-    } catch (e: any) {
+      const out = await renderTranslatedPage(original, testCase.bubbles);
+      const expectedPass = testCase.expectedPass ?? true;
+      const passed = out.qa.passed === expectedPass && out.qa.changedOutsideMask === 0;
+      console.log(
+        (passed ? "PASS " : "FAIL ") +
+        testCase.name +
+        " (outside=" + out.qa.changedOutsideMask +
+        ", overflow=" + out.qa.textOverflow + ")",
+      );
+      if (!passed) failures++;
+    } catch (error) {
       failures++;
-      console.log(`FAIL  ${c.name} -> ${e?.message}`);
+      console.log("FAIL " + testCase.name + " -> " + (error instanceof Error ? error.message : String(error)));
     }
   }
-  console.log(failures ? `\n${failures} caso(s) falharam` : "\nTodos os casos passaram");
+
+  console.log(failures ? "\n" + failures + " caso(s) falharam" : "\nTodos os casos passaram");
   process.exit(failures ? 1 : 0);
 }
 
-main().catch((e) => { console.error(e); process.exit(2); });
+main().catch((error) => {
+  console.error(error);
+  process.exit(2);
+});

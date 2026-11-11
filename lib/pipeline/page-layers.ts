@@ -1,3 +1,4 @@
+import { createCanvas } from "@napi-rs/canvas";
 import sharp from "sharp";
 
 export type PageLayerBubble = {
@@ -15,6 +16,12 @@ type Geometry = { x: number; y: number; width: number; height: number; polygon: 
 
 function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
+}
+
+function boundedNumber(value: unknown, fallback: number, min: number, max: number) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? clamp(numeric, min, max) : fallback;
 }
 
 function point(value: unknown, width: number, height: number): Point | null {
@@ -182,16 +189,16 @@ function styleOf(style: Record<string, unknown> | null, text: string, g: Geometr
   return {
     orientation,
     align,
-    fontFamily: typeof style?.font_family === "string" ? style.font_family : typeof style?.fontFamily === "string" ? style.fontFamily : "sans",
+    fontFamily: typeof style?.font_family === "string" ? style.font_family : typeof style?.fontFamily === "string" ? style.fontFamily : "sans-serif",
     fontSize,
     fontWeight: Number.isFinite(weight) ? Math.max(100, Math.min(900, Math.round(weight))) : 400,
     italic: Boolean(style?.italic),
-    lineSpacing: Math.max(0.8, Math.min(3, Number(style?.line_spacing ?? style?.lineSpacing ?? 1.2))),
-    letterSpacing: Math.max(0, Math.min(20, Number(style?.letter_spacing ?? style?.letterSpacing ?? 0))),
+    lineSpacing: boundedNumber(style?.line_spacing ?? style?.lineSpacing, 1.2, 0.8, 3),
+    letterSpacing: boundedNumber(style?.letter_spacing ?? style?.letterSpacing, 0, 0, 20),
     fill: color(style?.text_color ?? style?.foreground_color ?? style?.fg_color, "#111111"),
     stroke: color(style?.stroke_color ?? style?.outline_color, "#ffffff"),
-    strokeWidth: Math.max(0, Math.min(12, Number(style?.stroke_width ?? style?.outline_width ?? 0))),
-    opacity: Math.max(0, Math.min(1, Number(style?.opacity ?? 1))),
+    strokeWidth: boundedNumber(style?.stroke_width ?? style?.outline_width, 0, 0, 12),
+    opacity: boundedNumber(style?.opacity, 1, 0, 1),
     lines: rawLines.length ? rawLines : undefined,
   };
 }
@@ -255,22 +262,160 @@ async function localInpaint(original: Buffer, g: Geometry, cleanPolygons: Point[
   return sharp(pixels, { raw: info }).png().toBuffer();
 }
 
-async function textLayer(text: string, g: Geometry, rawStyle: Record<string, unknown> | null) {
-  const style = styleOf(rawStyle, text, g);
-  const lines = splitLines(text, style, g.width);
-  const lineHeight = Math.max(style.fontSize, Math.round(style.fontSize * style.lineSpacing));
-  const startY = Math.max(style.fontSize, (g.height - lineHeight * lines.length) / 2 + style.fontSize * 0.82);
-  const x = style.align === "left" ? 4 : style.align === "right" ? g.width - 4 : g.width / 2;
-  const anchor = style.align === "left" ? "start" : style.align === "right" ? "end" : "middle";
-  const attrs = `font-family="${escapeXml(style.fontFamily)}" font-size="${style.fontSize}" font-weight="${style.fontWeight}" font-style="${style.italic ? "italic" : "normal"}" fill="${style.fill}" stroke="${style.stroke}" stroke-width="${style.strokeWidth}" paint-order="stroke" letter-spacing="${style.letterSpacing}" opacity="${style.opacity}"`;
-  let body = "";
-  if (style.orientation === "vertical") {
-    const chars = [...text.replace(/\s+/g, "")];
-    body = `<text x="${g.width / 2}" y="${startY}" text-anchor="middle" ${attrs}>${chars.map((ch, i) => `<tspan x="${g.width / 2}" dy="${i ? lineHeight : 0}">${escapeXml(ch)}</tspan>`).join("")}</text>`;
-  } else {
-    body = `<text x="${x}" y="${startY}" text-anchor="${anchor}" ${attrs}>${lines.map((line, i) => `<tspan x="${x}" dy="${i ? lineHeight : 0}">${escapeXml(line)}</tspan>`).join("")}</text>`;
+function wrapMeasuredLines(
+  ctx: { measureText: (text: string) => { width: number } },
+  text: string,
+  maxWidth: number,
+  preferredLines?: string[],
+) {
+  const paragraphs = (preferredLines?.length ? preferredLines : text.split(/\r?\n/))
+    .flatMap((line) => line.split(/\r?\n/));
+  const output: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      if (!paragraph.trim()) output.push("");
+      continue;
+    }
+
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? line + " " + word : word;
+      if (ctx.measureText(candidate).width <= maxWidth) {
+        line = candidate;
+        continue;
+      }
+
+      if (line) {
+        output.push(line);
+        line = "";
+      }
+
+      if (ctx.measureText(word).width <= maxWidth) {
+        line = word;
+        continue;
+      }
+
+      let fragment = "";
+      for (const character of Array.from(word)) {
+        const next = fragment + character;
+        if (fragment && ctx.measureText(next).width > maxWidth) {
+          output.push(fragment);
+          fragment = character;
+        } else {
+          fragment = next;
+        }
+      }
+      line = fragment;
+    }
+
+    if (line) output.push(line);
   }
-  return sharp(Buffer.from(`<svg width="${g.width}" height="${g.height}" xmlns="http://www.w3.org/2000/svg">${body}</svg>`)).png().toBuffer();
+
+  return output.length ? output : [text];
+}
+
+function canvasFontFamily(value: string) {
+  const normalized = value.replace(/[^a-zA-Z0-9 _-]/g, "").trim().slice(0, 80);
+  if (!normalized || normalized.toLowerCase() === "sans") return "sans-serif";
+  if (["sans-serif", "serif", "monospace", "system-ui", "cursive", "fantasy"].includes(normalized.toLowerCase())) {
+    return normalized;
+  }
+  return '"' + normalized + '"';
+}
+
+async function textLayer(
+  text: string,
+  g: Geometry,
+  rawStyle: Record<string, unknown> | null,
+): Promise<{ buffer: Buffer; overflow: boolean }> {
+  const style = styleOf(rawStyle, text, g);
+  const canvas = createCanvas(g.width, g.height);
+  const ctx = canvas.getContext("2d");
+  if (g.polygon.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(g.polygon[0].x - g.x, g.polygon[0].y - g.y);
+    for (const vertex of g.polygon.slice(1)) {
+      ctx.lineTo(vertex.x - g.x, vertex.y - g.y);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
+  const maxWidth = Math.max(1, g.width - 8 - style.strokeWidth * 2);
+  const maxHeight = Math.max(1, g.height - 8 - style.strokeWidth * 2);
+  const family = canvasFontFamily(style.fontFamily);
+  const preferredLines = style.lines?.length ? style.lines : undefined;
+
+  let fontSize = Math.max(8, Math.min(96, style.fontSize));
+  let lines: string[] = [];
+  let lineHeight = fontSize;
+  let overflow = false;
+
+  const applyFont = () => {
+    ctx.font = (style.italic ? "italic " : "") + style.fontWeight + " " + fontSize + "px " + family;
+    ctx.letterSpacing = String(style.letterSpacing) + "px";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+  };
+
+  if (style.orientation === "vertical") {
+    const characters = Array.from(text.replace(/\s+/g, ""));
+    while (true) {
+      applyFont();
+      lineHeight = Math.max(fontSize, Math.round(fontSize * style.lineSpacing));
+      const widestCharacter = Math.max(...characters.map((character) => ctx.measureText(character).width), 0);
+      const fitsWidth = widestCharacter <= maxWidth;
+      const fitsHeight = lineHeight * characters.length <= maxHeight;
+      if ((fitsWidth && fitsHeight) || fontSize <= 8) {
+        overflow = !(fitsWidth && fitsHeight);
+        break;
+      }
+      fontSize -= 1;
+    }
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = style.fill;
+    ctx.strokeStyle = style.stroke;
+    ctx.lineWidth = style.strokeWidth;
+    ctx.globalAlpha = style.opacity;
+    const startY = (g.height - lineHeight * characters.length) / 2 + lineHeight / 2;
+    characters.forEach((character, index) => {
+      const y = startY + index * lineHeight;
+      if (style.strokeWidth > 0) ctx.strokeText(character, g.width / 2, y);
+      ctx.fillText(character, g.width / 2, y);
+    });
+  } else {
+    while (true) {
+      applyFont();
+      lines = wrapMeasuredLines(ctx, text, maxWidth, preferredLines);
+      lineHeight = Math.max(fontSize, Math.round(fontSize * style.lineSpacing));
+      const widestLine = Math.max(...lines.map((line) => ctx.measureText(line).width), 0);
+      const fitsWidth = widestLine <= maxWidth;
+      const fitsHeight = lineHeight * lines.length <= maxHeight;
+      if ((fitsWidth && fitsHeight) || fontSize <= 8) {
+        overflow = !(fitsWidth && fitsHeight);
+        break;
+      }
+      fontSize -= 1;
+    }
+
+    ctx.textAlign = style.align;
+    ctx.fillStyle = style.fill;
+    ctx.strokeStyle = style.stroke;
+    ctx.lineWidth = style.strokeWidth;
+    ctx.globalAlpha = style.opacity;
+    const x = style.align === "left" ? 4 : style.align === "right" ? g.width - 4 : g.width / 2;
+    const startY = (g.height - lineHeight * lines.length) / 2 + lineHeight / 2;
+    lines.forEach((line, index) => {
+      const y = startY + index * lineHeight;
+      if (style.strokeWidth > 0) ctx.strokeText(line, x, y);
+      ctx.fillText(line, x, y);
+    });
+  }
+
+  return { buffer: await canvas.encode("png"), overflow };
 }
 
 async function emptyTransparent(width: number, height: number) {
@@ -306,6 +451,7 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
     buffer: Buffer;
     geometry: Geometry;
   }> = [];
+  let textOverflow = 0;
   const manifest: Array<Record<string, unknown>> = [];
 
   for (const { bubble, index } of active) {
@@ -328,7 +474,8 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
     maskParts.push(polygonSvg(g.polygon, "#ffffff", width, height));
 
     const text = await textLayer(bubble.translated_text!.trim(), g, style);
-    textLayers.push({ bubbleIndex, buffer: text, geometry: g });
+    if (text.overflow) textOverflow++;
+    textLayers.push({ bubbleIndex, buffer: text.buffer, geometry: g });
 
     manifest.push({
       bubble_index: bubbleIndex,
@@ -339,7 +486,7 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
       polygon: g.polygon,
       text_line_polygons: linePolygons,
       style,
-      renderer: "tradumanga-textblock-v2",
+      renderer: "napi-rs-canvas-text-v1",
       cleaning: "localized-propagation-v1",
     });
   }
@@ -370,7 +517,7 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
     .png()
     .toBuffer();
 
-  const qa = await inspectRenderedOutput(original, translated, normalizedMask);
+  const qa = await inspectRenderedOutput(original, translated, normalizedMask, textOverflow);
 
   return {
     translated,
@@ -381,13 +528,13 @@ export async function renderPageLayers(original: Buffer, bubbles: PageLayerBubbl
     manifest,
     qa: {
       ...qa,
-      model: "sharp-layer-renderer",
+      model: "sharp+napi-rs-canvas",
       renderedBubbles: textLayers.length,
     },
   };
 }
 
-async function inspectRenderedOutput(original: Buffer, translated: Buffer, mask: Buffer) {
+async function inspectRenderedOutput(original: Buffer, translated: Buffer, mask: Buffer, textOverflow = 0) {
   const [a, b, m] = await Promise.all([
     sharp(original).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
     sharp(translated).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
@@ -418,7 +565,8 @@ async function inspectRenderedOutput(original: Buffer, translated: Buffer, mask:
   }
 
   return {
-    passed: changedOutsideMask === 0,
+    passed: changedOutsideMask === 0 && textOverflow === 0,
+    textOverflow,
     changedInsideMask,
     changedOutsideMask,
     width: a.info.width,
