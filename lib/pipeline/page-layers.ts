@@ -18,6 +18,12 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v));
 }
 
+function boundedNumber(value: unknown, fallback: number, min: number, max: number) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? clamp(numeric, min, max) : fallback;
+}
+
 function point(value: unknown, width: number, height: number): Point | null {
   if (!value || typeof value !== "object") return null;
   const p = value as Record<string, unknown>;
@@ -187,12 +193,12 @@ function styleOf(style: Record<string, unknown> | null, text: string, g: Geometr
     fontSize,
     fontWeight: Number.isFinite(weight) ? Math.max(100, Math.min(900, Math.round(weight))) : 400,
     italic: Boolean(style?.italic),
-    lineSpacing: Math.max(0.8, Math.min(3, Number(style?.line_spacing ?? style?.lineSpacing ?? 1.2))),
-    letterSpacing: Math.max(0, Math.min(20, Number(style?.letter_spacing ?? style?.letterSpacing ?? 0))),
+    lineSpacing: boundedNumber(style?.line_spacing ?? style?.lineSpacing, 1.2, 0.8, 3),
+    letterSpacing: boundedNumber(style?.letter_spacing ?? style?.letterSpacing, 0, 0, 20),
     fill: color(style?.text_color ?? style?.foreground_color ?? style?.fg_color, "#111111"),
     stroke: color(style?.stroke_color ?? style?.outline_color, "#ffffff"),
-    strokeWidth: Math.max(0, Math.min(12, Number(style?.stroke_width ?? style?.outline_width ?? 0))),
-    opacity: Math.max(0, Math.min(1, Number(style?.opacity ?? 1))),
+    strokeWidth: boundedNumber(style?.stroke_width ?? style?.outline_width, 0, 0, 12),
+    opacity: boundedNumber(style?.opacity, 1, 0, 1),
     lines: rawLines.length ? rawLines : undefined,
   };
 }
@@ -336,8 +342,8 @@ async function textLayer(
     ctx.closePath();
     ctx.clip();
   }
-  const maxWidth = Math.max(1, g.width - 8);
-  const maxHeight = Math.max(1, g.height - 8);
+  const maxWidth = Math.max(1, g.width - 8 - style.strokeWidth * 2);
+  const maxHeight = Math.max(1, g.height - 8 - style.strokeWidth * 2);
   const family = canvasFontFamily(style.fontFamily);
   const preferredLines = style.lines?.length ? style.lines : undefined;
 
@@ -359,7 +365,8 @@ async function textLayer(
     while (true) {
       applyFont();
       lineHeight = Math.max(fontSize, Math.round(fontSize * style.lineSpacing));
-      const fitsWidth = fontSize <= maxWidth;
+      const widestCharacter = Math.max(...characters.map((character) => ctx.measureText(character).width), 0);
+      const fitsWidth = widestCharacter <= maxWidth;
       const fitsHeight = lineHeight * characters.length <= maxHeight;
       if ((fitsWidth && fitsHeight) || fontSize <= 8) {
         overflow = !(fitsWidth && fitsHeight);
