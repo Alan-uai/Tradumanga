@@ -277,20 +277,20 @@ O contexto não deve autorizar invenção de texto que não esteja presente.
 
 ### Fase G — Renderer
 
-Pipeline:
+Pipeline implementado para imagens estáticas:
 
-1. carregar original imutável;
-2. carregar regiões de texto autorizadas pela análise Gemini;
-3. preparar uma cópia da página para o OpenRouter;
-4. enviar a página ao OpenRouter Image API em modo de edição;
-5. instruir o modelo a substituir somente os textos fornecidos, preservando arte, personagens, cenários e composição;
-6. normalizar a saída para as dimensões originais;
-7. aplicar uma máscara determinística derivada dos polígonos autorizados;
-8. descartar qualquer alteração do modelo fora dessas regiões;
-9. executar QA de pixels;
-10. salvar a imagem traduzida como artefato separado.
+1. carregar o original imutável;
+2. carregar as regiões, geometrias, estilos e traduções autorizadas pelo Gemini;
+3. limpar somente os traços de texto identificados dentro das regiões autorizadas, mantendo o restante do recorte original;
+4. usar `@napi-rs/canvas` (Canvas 2D baseado em Skia) para rasterizar cada texto traduzido em uma camada PNG transparente;
+5. medir texto com `measureText`, quebrar linhas pela largura real, reduzir a fonte até o limite legível e respeitar alinhamento, peso, itálico, contorno, espaçamento e orientação vertical/horizontal;
+6. usar Sharp para compor as camadas limpas e tipográficas, gerar a máscara autorizada e o manifesto da página;
+7. executar QA de pixels e de overflow tipográfico;
+8. salvar a página final, a base limpa, a máscara e as camadas individuais como artefatos separados no Storage.
 
-O OpenRouter é o motor de edição visual. Gemini continua responsável por OCR, geometria, contexto e tradução. A máscara determinística é a barreira de integridade: a saída do modelo nunca é aceita fora das regiões autorizadas.
+O Gemini continua responsável por OCR, geometria, contexto e tradução. Canvas é responsável pela renderização tipográfica determinística; Sharp permanece responsável pela limpeza localizada, composição, codificação e QA. O renderer não redesenha a página inteira com IA generativa e não altera o original. Se o texto não couber mesmo no tamanho mínimo legível, o QA reprova a página em vez de salvar silenciosamente um texto cortado.
+
+A implementação usa a dependência `@napi-rs/canvas` já presente no projeto e configurada como pacote externo no runtime Node.js da Vercel; não adiciona uma nova dependência nem altera o schema do Supabase.
 
 ### Fase H — QA visual e integridade
 
@@ -398,7 +398,7 @@ Base implementada:
 - GitHub: Alan-uai/Tradumanga
 - Supabase: Tradumanga (voaavcicveaiitzbaogx)
 - Vercel: tradumanga
-- OpenRouter: Image API para edição localizada das páginas
+- Renderer: `@napi-rs/canvas` para camadas tipográficas e Sharp para limpeza, composição e QA de pixels
 
 Último commit conhecido:
 
