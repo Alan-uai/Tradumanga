@@ -272,7 +272,16 @@ export const renderPage = inngest.createFunction(
         style_json:b.style_json,
         lines:Array.isArray(b.style_json?.lines) ? b.style_json.lines : [],
       })));
-      if(!rendered.qa.passed) throw new Error(`QA de camadas falhou: ${rendered.qa.changedOutsideMask} pixels alterados fora das regiões autorizadas.`);
+      if (!rendered.qa.passed) {
+        const issues: string[] = [];
+        if (rendered.qa.changedOutsideMask > 0) {
+          issues.push(rendered.qa.changedOutsideMask + " pixels alterados fora das regiões autorizadas");
+        }
+        if (rendered.qa.textOverflow > 0) {
+          issues.push(rendered.qa.textOverflow + " balão(ões) com texto que excede a região autorizada");
+        }
+        throw new Error("QA de camadas falhou: " + (issues.join("; ") || "integridade visual não confirmada") + ".");
+      }
 
       const prefix=actorPrefix(series);
       const stem=`${String(page.page_number).padStart(4,"0")}`;
